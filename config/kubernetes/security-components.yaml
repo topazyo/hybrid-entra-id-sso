@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hybrid-sso-security
+  namespace: identity
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: hybrid-sso-security
+  template:
+    metadata:
+      labels:
+        app: hybrid-sso-security
+    spec:
+      containers:
+      - name: security-orchestrator
+        image: ${ACR_NAME}.azurecr.io/security-orchestrator:${VERSION}
+        ports:
+        - containerPort: 8080
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "info"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config-volume
+        configMap:
+          name: hybrid-sso-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hybrid-sso-security
+  namespace: identity
+spec:
+  selector:
+    app: hybrid-sso-security
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hybrid-sso-security-policy
+  namespace: identity
+spec:
+  podSelector:
+    matchLabels:
+      app: hybrid-sso-security
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: identity
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 443
