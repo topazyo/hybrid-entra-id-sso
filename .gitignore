@@ -1,0 +1,80 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Testing
+coverage/
+.nyc_output/
+
+# Production
+dist/
+build/
+out/
+
+# Development
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Azure Functions
+local.settings.json
+bin/
+obj/
+
+# PowerShell
+*.ps1.log
+*.psm1.log
+*.psd1.log
+
+# Certificates
+*.pfx
+*.pem
+*.key
+*.crt
+
+# Temporary files
+tmp/
+temp/
+
+# Cache
+.npm
+.eslintcache
+.tsbuildinfo
+
+# Yarn
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+
+# Custom
+config/secrets/
+**/private/
+**/*.private.*
