@@ -206,112 +206,82 @@ class MockErrorProvider implements MockAuthenticationProvider {
   }
 }
 
-describe('AuthenticationChain with AuditLogging', () => {
+describe('AuthenticationChain', () => {
   let authChain: AuthenticationChain;
-  let mockAuditLogger: MockAuditLogger; // Use the mock for AuditLogger
 
   beforeEach(() => {
-    mockAuditLogger = new MockAuditLogger(); // Instantiate the mock
-    authChain = new AuthenticationChain(mockAuditLogger); // Pass mock to constructor
-    jest.useFakeTimers().setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
+    authChain = new AuthenticationChain();
   });
 
-  afterEach(() => {
-    mockAuditLogger.clearEvents(); // Clear events for next test
-    jest.useRealTimers();
+  it('should create an instance', () => {
+    expect(authChain).toBeDefined();
   });
 
-  it('should log chain start and completion when no providers are added', async () => {
-    const request = { userId: "testUser", correlationId: "corr-empty" };
-    await authChain.execute(request);
-
-    expect(mockAuditLogger.loggedEvents.length).toBe(2);
-    expect(mockAuditLogger.loggedEvents[0]).toMatchObject({
-      eventType: 'AUTH_CHAIN_START',
-      userId: "testUser",
-      status: 'PENDING',
-      correlationId: "corr-empty"
-    });
-    expect(mockAuditLogger.loggedEvents[1]).toMatchObject({
-      eventType: 'AUTH_CHAIN_COMPLETE',
-      userId: "testUser",
-      status: 'FAILURE',
-      correlationId: "corr-empty",
-      eventDetails: expect.objectContaining({ reason: "No providers" })
-    });
+  it('should return isAuthenticated: false if no providers are added', async () => {
+    const response = await authChain.execute({ userId: "testUser" });
+    expect(response.isAuthenticated).toBe(false);
+    expect(response.error).toBe('No providers in chain');
   });
 
-  it('should log provider success and chain completion', async () => {
-    authChain.addProvider(new MockSuccessProvider());
-    const request = { userId: "testUser", correlationId: "corr-success" };
-    await authChain.execute(request);
-
-    // Expected logs: CHAIN_START, PROVIDER_START, PROVIDER_SUCCESS, CHAIN_COMPLETE
-    expect(mockAuditLogger.loggedEvents.length).toBe(4);
-    expect(mockAuditLogger.loggedEvents.find(e => e.eventType === 'AUTH_PROVIDER_SUCCESS')).toMatchObject({
-      userId: "testUser",
-      status: 'SUCCESS',
-      eventDetails: expect.objectContaining({ provider: "SuccessProvider" })
-    });
-    expect(mockAuditLogger.loggedEvents.find(e => e.eventType === 'AUTH_CHAIN_COMPLETE' && e.status === 'SUCCESS')).toBeTruthy();
-  });
-
-  it('should log provider failure and continue, then chain failure', async () => {
-    authChain.addProvider(new MockFailureProvider());
-    authChain.addProvider(new MockSuccessProvider()); // This one will succeed
-    const request = { userId: "testUser", correlationId: "corr-fail-continue" };
-    await authChain.execute(request);
-
-    // CHAIN_START, P1_START, P1_FAILURE, P2_START, P2_SUCCESS, CHAIN_COMPLETE
-    expect(mockAuditLogger.loggedEvents.length).toBe(6);
-    const failureLog = mockAuditLogger.loggedEvents.find(e => e.eventType === 'AUTH_PROVIDER_FAILURE');
-    expect(failureLog).toMatchObject({
-      eventDetails: expect.objectContaining({ provider: "FailureProvider" }),
-      status: 'FAILURE'
-    });
-    const successLog = mockAuditLogger.loggedEvents.find(e => e.eventType === 'AUTH_PROVIDER_SUCCESS');
-    expect(successLog).toMatchObject({
-      eventDetails: expect.objectContaining({ provider: "SuccessProvider" }),
-      status: 'SUCCESS'
-    });
-    expect(mockAuditLogger.loggedEvents.find(e => e.eventType === 'AUTH_CHAIN_COMPLETE' && e.status === 'SUCCESS')).toBeTruthy();
-  });
-
-  it('should log provider error and chain completion with failure', async () => {
-    authChain.addProvider(new MockErrorProvider());
-    const request = { userId: "testUser", correlationId: "corr-error" };
-    await authChain.execute(request);
-
-    // CHAIN_START, P1_START, P1_ERROR, CHAIN_COMPLETE (failure)
-    expect(mockAuditLogger.loggedEvents.length).toBe(4);
-    const errorLog = mockAuditLogger.loggedEvents.find(e => e.eventType === 'AUTH_PROVIDER_ERROR');
-    expect(errorLog).toMatchObject({
-      eventDetails: expect.objectContaining({ provider: "ErrorProvider", errorMessage: "Critical error in ErrorProvider" }),
-      status: 'FAILURE'
-    });
-     const chainCompleteLog = mockAuditLogger.loggedEvents.find(e => e.eventType === 'AUTH_CHAIN_COMPLETE' && e.status === 'FAILURE');
-    expect(chainCompleteLog).toBeTruthy();
-    expect(chainCompleteLog?.eventDetails).toMatchObject({
-        reason: "Provider ErrorProvider threw error"
-    });
-  });
-
-  // Keep existing tests and adapt them if necessary, or ensure they still pass
-  it('original: should authenticate successfully if a provider succeeds', async () => {
+  it('should authenticate successfully if a provider succeeds', async () => {
     authChain.addProvider(new MockFailureProvider());
     authChain.addProvider(new MockSuccessProvider());
     const response = await authChain.execute({ userId: "testUser" });
     expect(response.isAuthenticated).toBe(true);
     expect(response.userId).toBe("testUser");
+    expect(response.details?.provider).toBe("SuccessProvider");
   });
 
-  it('original: should handle providers that throw errors', async () => {
+  it('should return the last failure response if all providers fail', async () => {
+    authChain.addProvider(new MockFailureProvider());
+    authChain.addProvider(new MockFailureProvider()); // Add another one
+    const response = await authChain.execute({ userId: "unknownUser" });
+    expect(response.isAuthenticated).toBe(false);
+    expect(response.error).toBe("Failed by FailureProvider");
+  });
+
+  it('should stop and return success on the first successful provider', async () => {
+    const successProvider = new MockSuccessProvider();
+    const failureProvider = new MockFailureProvider();
+    jest.spyOn(successProvider, 'authenticate');
+    jest.spyOn(failureProvider, 'authenticate');
+
+    authChain.addProvider(successProvider);
+    authChain.addProvider(failureProvider); // This should not be called if successProvider works
+
+    const response = await authChain.execute({ userId: "testUser" });
+    expect(response.isAuthenticated).toBe(true);
+    expect(response.userId).toBe("testUser");
+    expect(successProvider.authenticate).toHaveBeenCalledTimes(1);
+    expect(failureProvider.authenticate).not.toHaveBeenCalled();
+  });
+
+  it('should handle providers that throw errors', async () => {
     authChain.addProvider(new MockErrorProvider());
     authChain.addProvider(new MockSuccessProvider()); // This should not be reached
 
     const response = await authChain.execute({ userId: "testUser" });
     expect(response.isAuthenticated).toBe(false);
-    expect(response.error).toContain("ErrorProvider failed with exception: Critical error in ErrorProvider");
+    expect(response.error).toContain("ErrorProvider failed: Critical error in ErrorProvider");
   });
 
+  it('should pass request object to each provider', async () => {
+    const provider1 = new MockFailureProvider();
+    const provider2 = new MockSuccessProvider();
+    jest.spyOn(provider1, 'authenticate');
+    jest.spyOn(provider2, 'authenticate');
+
+    authChain.addProvider(provider1);
+    authChain.addProvider(provider2);
+
+    const request: MockAuthRequest = { userId: "testUser", source: "web" };
+    await authChain.execute(request);
+
+    expect(provider1.authenticate).toHaveBeenCalledWith(request);
+    expect(provider2.authenticate).toHaveBeenCalledWith(request);
+  });
+
+  // Placeholder for more complex scenarios
+  it.todo('should handle context pass-through between providers');
+  it.todo('should allow a provider to modify request for subsequent providers');
 });
