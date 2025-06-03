@@ -1,5 +1,5 @@
 // src/index.ts
-import express, { Express, Request, Response } from 'express';
+import express, { Express, Request, Response, NextFunction } from 'express'; // Ensure NextFunction is imported
 import { AuditLogger, ConsoleLogProvider } from './services/AuditLogger'; // Assuming ConsoleLogProvider is exported
 import { HealthController } from './controllers/HealthController';
 import { ConfigurationManager } from './services/ConfigurationManager'; // For port configuration
@@ -12,8 +12,12 @@ auditLogger.setGlobalContext('appInstanceId', `instance-${Math.random().toString
 const configManager = new ConfigurationManager(new ConsoleLogProvider()); // Provide logger
 configManager.loadFromEnv('APP_'); // Example: APP_PORT=3000
 configManager.set('defaultPort', 3000); // Set a default if not in env
+// Example of setting a non-sensitive, allowed key for testing the /config endpoint
+configManager.set('healthCheck.testKey', 'healthyValue123');
+configManager.set('appVersion', '0.1.0-running'); // Set app version for /config endpoint
 
-const healthController = new HealthController(new ConsoleLogProvider(), configManager.get('appVersion', '0.1.0-default')); // Pass LogProvider
+const healthController = new HealthController(new ConsoleLogProvider(), configManager, configManager.get('appVersion', '0.1.0-default')); // Pass LogProvider & ConfigManager
+
 
 const app: Express = express();
 const PORT: number = parseInt(configManager.get('port', configManager.get('defaultPort')) as string, 10);
@@ -21,10 +25,10 @@ const PORT: number = parseInt(configManager.get('port', configManager.get('defau
 // Middleware (optional for now, but good for future)
 app.use(express.json());
 // Basic request logging middleware using AuditLogger
-app.use((req: Request, res: Response, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
   const correlationId = req.headers['x-correlation-id'] || `http-${Date.now()}-${Math.random().toString(36).substring(2,7)}`;
-  req.headers['x-correlation-id'] = correlationId; // Ensure it's available for downstream
+  req.headers['x-correlation-id'] = correlationId as string; // Ensure it's available for downstream
 
   auditLogger.logSystemActivity(
     'Incoming HTTP Request',
@@ -71,20 +75,72 @@ app.get('/health', async (req: Request, res: Response) => {
     }
     res.status(200).json(healthStatus);
   } catch (error: any) {
-    auditLogger.logSystemActivity('Error in /health endpoint', { error: error.message, stack: error.stack }, 'error');
+    auditLogger.logSystemActivity('Error in /health endpoint', { error: error.message, stack: error.stack, correlationId: req.headers['x-correlation-id'] as string | undefined }, 'error');
     res.status(500).json({ status: 'ERROR', message: 'Internal server error during health check' });
   }
 });
+
+// --- Add new /config/:key route ---
+const SENSITIVE_KEY_PATTERNS = [/secret/i, /password/i, /key/i, /token/i]; // Case-insensitive patterns
+const ALLOWED_CONFIG_KEYS = ['healthCheck.testKey', 'defaultPort', 'appVersion', 'appName']; // Explicitly allowed keys
+
+app.get('/config/:key', (req: Request, res: Response) => {
+  const { key } = req.params;
+  const correlationId = req.headers['x-correlation-id'] as string | undefined;
+
+  // Check if the key is sensitive and not explicitly allowed
+  const isSensitive = SENSITIVE_KEY_PATTERNS.some(pattern => pattern.test(key)) && !ALLOWED_CONFIG_KEYS.includes(key);
+
+  if (isSensitive) {
+    auditLogger.logEvent(
+      'CONFIG_ACCESS_DENIED',
+      { key, reason: 'Sensitive key access restricted' },
+      undefined, // userId
+      req.ip,    // clientIp
+      'FAILURE',
+      correlationId
+    );
+    res.status(403).json({ error: 'Access to this configuration key is restricted.' });
+    return;
+  }
+
+  const value = configManager.get(key);
+
+  if (value !== undefined) {
+    auditLogger.logEvent(
+      'CONFIG_ACCESS_SUCCESS',
+      { key /* value: value - avoid logging sensitive values if any slip through filter */ },
+      undefined,
+      req.ip,
+      'SUCCESS',
+      correlationId
+    );
+    res.status(200).json({ key, value });
+  } else {
+    auditLogger.logEvent(
+      'CONFIG_ACCESS_NOT_FOUND',
+      { key },
+      undefined,
+      req.ip,
+      'INFO', // Not necessarily a failure, just info that it wasn't found
+      correlationId
+    );
+    res.status(404).json({ error: `Configuration key '${key}' not found.` });
+  }
+});
+
 
 // Start server
 app.listen(PORT, () => {
   auditLogger.logSystemActivity(`Server is running on port ${PORT}`, { port: PORT, environment: process.env.NODE_ENV || 'development' }, 'info');
   console.log(`Server listening on http://localhost:${PORT}`);
   console.log(`Health check available at http://localhost:${PORT}/health`);
+  console.log(`Config access (example): http://localhost:${PORT}/config/appName`);
+  console.log(`Config access (example allowed sensitive pattern): http://localhost:${PORT}/config/healthCheck.testKey`);
 });
 
 // Basic error handler (optional, but good practice)
-app.use((err: Error, req: Request, res: Response, next: express.NextFunction) => {
+app.use((err: Error, req: Request, res: Response, next: NextFunction) => { // Added NextFunction type
     auditLogger.logSystemActivity('Unhandled Express Error', {
         errorMessage: err.message,
         stack: err.stack,
@@ -92,7 +148,11 @@ app.use((err: Error, req: Request, res: Response, next: express.NextFunction) =>
         method: req.method,
         correlationId: req.headers['x-correlation-id'] as string | undefined
     }, 'error');
+    if (res.headersSent) { // If headers already sent, delegate to default Express error handler
+        return next(err);
+    }
     res.status(500).send('Something broke!');
 });
+
 
 export default app; // Export for potential testing or programmatic use
