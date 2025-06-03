@@ -1,78 +1,9 @@
 // src/services/AuditLogger.test.ts
 
-// Define a simplified interface for what an AuditLogEvent might look like
-interface AuditLogEvent {
-  timestamp: Date;
-  eventType: string;
-  eventDetails: any;
-  userId?: string;
-  clientIp?: string;
-  status?: 'SUCCESS' | 'FAILURE' | 'PENDING'; // Example statuses
-  correlationId?: string;
-}
+// Import the actual AuditLogger and related interfaces
+import { AuditLogger, LogProvider, AuditLogEvent, SystemActivityLog, ConsoleLogProvider } from './AuditLogger';
 
-// Define a simplified interface for a logging provider
-// In a real app, this could be Winston, Pino, or a custom abstraction
-interface LogProvider {
-  info(message: string, meta?: any): void;
-  warn(message: string, meta?: any): void;
-  error(message: string, meta?: any): void;
-}
-
-// Simplified AuditLogger class for demonstration
-// The actual implementation would be in 'AuditLogger.ts'
-class AuditLogger {
-  private logger: LogProvider;
-
-  constructor(logProvider: LogProvider) {
-    this.logger = logProvider;
-  }
-
-  public logEvent(
-    eventType: string,
-    eventDetails: any,
-    userId?: string,
-    clientIp?: string,
-    status?: 'SUCCESS' | 'FAILURE' | 'PENDING',
-    correlationId?: string
-  ): void {
-    const timestamp = new Date();
-    const logEntry: AuditLogEvent = {
-      timestamp,
-      eventType,
-      eventDetails,
-      userId,
-      clientIp,
-      status,
-      correlationId,
-    };
-
-    // In a real system, this might be more sophisticated, e.g., specific log channels
-    this.logger.info('AuditEvent', logEntry);
-  }
-
-  public logSystemActivity(message: string, details: any, level: 'info' | 'warn' | 'error' = 'info') {
-    const logEntry = {
-        timestamp: new Date(),
-        message,
-        details
-    };
-    switch(level) {
-        case 'info':
-            this.logger.info('SystemActivity', logEntry);
-            break;
-        case 'warn':
-            this.logger.warn('SystemActivity', logEntry);
-            break;
-        case 'error':
-            this.logger.error('SystemActivity', logEntry);
-            break;
-    }
-  }
-}
-
-
-// Mock LogProvider for testing
+// Mock LogProvider for testing - this can remain as it's a test utility
 class MockLogProvider implements LogProvider {
   public logs: { level: string, message: string, meta?: any }[] = [];
 
@@ -85,26 +16,30 @@ class MockLogProvider implements LogProvider {
   error(message: string, meta?: any): void {
     this.logs.push({ level: 'error', message, meta });
   }
+  debug(message: string, meta?: any): void { // Added debug to match interface
+    this.logs.push({ level: 'debug', message, meta });
+  }
   clearLogs(): void {
     this.logs = [];
   }
 }
 
-describe('AuditLogger', () => {
+describe('AuditLogger Basic Functionality', () => {
   let mockLogProvider: MockLogProvider;
-  let auditLogger: AuditLogger;
+  let auditLogger: AuditLogger; // Will now be the real AuditLogger
 
   beforeEach(() => {
     mockLogProvider = new MockLogProvider();
-    auditLogger = new AuditLogger(mockLogProvider);
+    auditLogger = new AuditLogger(mockLogProvider); // Instantiate real AuditLogger with mock provider
     jest.useFakeTimers().setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
   });
 
   afterEach(() => {
+    mockLogProvider.clearLogs(); // Clear logs from the mock provider
     jest.useRealTimers();
   });
 
-  it('should create an instance', () => {
+  it('should create an instance using MockLogProvider', () => {
     expect(auditLogger).toBeDefined();
   });
 
@@ -123,10 +58,11 @@ describe('AuditLogger', () => {
     const log = mockLogProvider.logs[0];
     expect(log.level).toBe('info');
     expect(log.message).toBe('AuditEvent');
+    // Note: The structure of log.meta will now be exactly what AuditLogger produces
     expect(log.meta).toEqual({
       timestamp: new Date('2024-01-01T00:00:00.000Z'),
       eventType: 'USER_LOGIN',
-      eventDetails: { data: 'sample data', operation: 'create' },
+      eventDetails: { data: 'sample data', operation: 'create' }, // Global context not set yet
       userId: 'user123',
       clientIp: '192.168.1.1',
       status: 'SUCCESS',
@@ -134,7 +70,7 @@ describe('AuditLogger', () => {
     });
   });
 
-  it('logEvent should handle optional fields correctly when not provided', () => {
+  it('logEvent should handle optional fields correctly and default status to INFO', () => {
     auditLogger.logEvent('SYSTEM_STARTUP', { module: 'core' });
 
     expect(mockLogProvider.logs.length).toBe(1);
@@ -143,10 +79,10 @@ describe('AuditLogger', () => {
     expect(log.meta).toEqual({
       timestamp: new Date('2024-01-01T00:00:00.000Z'),
       eventType: 'SYSTEM_STARTUP',
-      eventDetails: { module: 'core' },
+      eventDetails: { module: 'core' }, // Global context not set yet
       userId: undefined,
       clientIp: undefined,
-      status: undefined,
+      status: 'INFO', // Default status
       correlationId: undefined,
     });
   });
@@ -167,7 +103,7 @@ describe('AuditLogger', () => {
     expect(log.meta).toEqual({
         timestamp: new Date('2024-01-01T00:00:00.000Z'),
         message: "System startup complete",
-        details: { modulesLoaded: 5 }
+        details: { modulesLoaded: 5 } // Global context not set yet
     });
   });
 
@@ -180,7 +116,7 @@ describe('AuditLogger', () => {
      expect(log.meta).toEqual({
         timestamp: new Date('2024-01-01T00:00:00.000Z'),
         message: "Low disk space",
-        details: { freeSpace: "100MB" }
+        details: { freeSpace: "100MB" } // Global context not set yet
     });
   });
 
@@ -193,7 +129,7 @@ describe('AuditLogger', () => {
     expect(log.meta).toEqual({
         timestamp: new Date('2024-01-01T00:00:00.000Z'),
         message: "Database connection failed",
-        details: { errorCode: "DB500" }
+        details: { errorCode: "DB500" } // Global context not set yet
     });
   });
 
@@ -203,9 +139,140 @@ describe('AuditLogger', () => {
     const log = mockLogProvider.logs[0];
     expect(log.level).toBe('info');
     expect(log.message).toBe('SystemActivity');
+    expect(log.meta.details).toEqual({ checkId: "R789" }); // Global context not set
   });
+
+  it('logSystemActivity should use debug level and fallback if provider does not have debug', () => {
+    auditLogger.logSystemActivity("Debugging issue", { traceId: "trace-001" }, 'debug');
+    expect(mockLogProvider.logs.length).toBe(1);
+    const log = mockLogProvider.logs[0];
+    expect(log.level).toBe('debug'); // MockLogProvider has debug
+    expect(log.message).toBe('SystemActivity');
+    expect(log.meta.details).toEqual({ traceId: "trace-001" });
+
+    // Test fallback if provider doesn't have debug
+    const simpleProvider = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const loggerWithSimpleProvider = new AuditLogger(simpleProvider);
+    loggerWithSimpleProvider.logSystemActivity("Debugging with simple provider", {}, 'debug');
+    expect(simpleProvider.info).toHaveBeenCalledWith('SystemActivity [DEBUG]', expect.anything());
+  });
+
 
   it.todo('should handle different types of eventDetails (e.g., strings, numbers, complex objects)');
   it.todo('should integrate with a more sophisticated logging library if provided');
   it.todo('should have a mechanism for filtering or sampling logs if it becomes a feature');
+});
+
+
+describe('AuditLogger with Global Context', () => {
+  let mockLogProvider: MockLogProvider;
+  let auditLogger: AuditLogger; // Real AuditLogger
+
+  beforeEach(() => {
+    mockLogProvider = new MockLogProvider();
+    auditLogger = new AuditLogger(mockLogProvider);
+    jest.useFakeTimers().setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    mockLogProvider.clearLogs();
+    jest.useRealTimers();
+  });
+
+  it('setGlobalContext should add a field that appears in logEvent details', () => {
+    auditLogger.setGlobalContext('appName', 'MySSOApp');
+    auditLogger.logEvent('USER_ACTION', { action: 'view_page' });
+
+    expect(mockLogProvider.logs.length).toBe(1);
+    const log = mockLogProvider.logs[0];
+    expect(log.meta.eventDetails).toEqual({ // eventDetails is now the merged object
+      appName: 'MySSOApp',
+      action: 'view_page',
+    });
+  });
+
+  it('setGlobalContext should add a field that appears in logSystemActivity details', () => {
+    auditLogger.setGlobalContext('appVersion', '1.0.2');
+    auditLogger.logSystemActivity('SERVICE_START', { serviceName: 'auth_service' });
+
+    expect(mockLogProvider.logs.length).toBe(1);
+    const log = mockLogProvider.logs[0];
+    expect(log.meta.details).toEqual({ // details is now the merged object
+        appVersion: '1.0.2',
+        serviceName: 'auth_service',
+    });
+  });
+
+  it('setGlobalContext should update an existing global context field', () => {
+    auditLogger.setGlobalContext('environment', 'staging');
+    auditLogger.setGlobalContext('environment', 'production');
+    auditLogger.logEvent('CONFIG_LOADED', { configSource: 'file' });
+
+    expect(mockLogProvider.logs[0].meta.eventDetails).toEqual({
+      environment: 'production',
+      configSource: 'file',
+    });
+  });
+
+  it('clearGlobalContext should remove a field, and it should not appear in logs', () => {
+    auditLogger.setGlobalContext('sessionId', 'session123');
+    auditLogger.setGlobalContext('tenantId', 'tenant-abc');
+    auditLogger.clearGlobalContext('sessionId');
+    auditLogger.logEvent('USER_LOGOUT', { userId: 'u1' });
+
+    expect(mockLogProvider.logs[0].meta.eventDetails).toEqual({
+      tenantId: 'tenant-abc',
+      userId: 'u1', // This is part of eventDetails, not a top-level field in the meta.eventDetails itself
+    });
+    expect(mockLogProvider.logs[0].meta.eventDetails.sessionId).toBeUndefined();
+  });
+
+  it('getGlobalContext should return a copy of the current global context', () => {
+    auditLogger.setGlobalContext('key1', 'value1');
+    auditLogger.setGlobalContext('key2', 'value2');
+    const context = auditLogger.getGlobalContext();
+    expect(context).toEqual({ key1: 'value1', key2: 'value2' });
+    // Ensure it's a copy
+    context.key1 = 'changed';
+    expect(auditLogger.getGlobalContext().key1).toBe('value1');
+  });
+
+  it('event-specific details should override global context fields with the same name in logEvent', () => {
+    auditLogger.setGlobalContext('status', 'GLOBAL_PENDING'); // This 'status' is a custom field in globalContext
+    auditLogger.setGlobalContext('appName', 'MySSOApp');
+    // The 'status' parameter of logEvent is for the fixed AuditLogEvent.status field
+    auditLogger.logEvent('REQUEST_PROCESS', { status: 'EVENT_SUCCESS', data: 'payload' }, undefined, undefined, 'SUCCESS');
+
+    const logMeta = mockLogProvider.logs[0].meta;
+    expect(logMeta.status).toBe('SUCCESS'); // This is the fixed field from logEvent parameter
+    expect(logMeta.eventDetails).toEqual({ // eventDetails contains merged context
+      appName: 'MySSOApp',
+      status: 'EVENT_SUCCESS', // Event specific 'status' in details overrides global 'status' in details
+      data: 'payload',
+    });
+  });
+
+  it('event-specific details should override global context fields with the same name in logSystemActivity', () => {
+    auditLogger.setGlobalContext('source', 'GLOBAL_SYSTEM');
+    auditLogger.setGlobalContext('module', 'CoreModule');
+    auditLogger.logSystemActivity("Processing data", { source: 'SpecificTask', items: 5 });
+
+    expect(mockLogProvider.logs[0].meta.details).toEqual({
+      module: 'CoreModule',
+      source: 'SpecificTask', // Event specific 'source' in details overrides global 'source' in details
+      items: 5
+    });
+  });
+
+  it('multiple global context fields should be included in logs', () => {
+    auditLogger.setGlobalContext('datacenter', 'dc-west-1');
+    auditLogger.setGlobalContext('clusterId', 'cluster-007');
+    auditLogger.logEvent('NODE_HEALTH_CHECK', { node: 'node-a1' });
+
+    expect(mockLogProvider.logs[0].meta.eventDetails).toEqual({
+      datacenter: 'dc-west-1',
+      clusterId: 'cluster-007',
+      node: 'node-a1',
+    });
+  });
 });
