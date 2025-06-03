@@ -1,5 +1,6 @@
 // src/services/AuditLogger.ts
 
+// Define the structure for an audit log event
 export interface AuditLogEvent {
   timestamp: Date;
   eventType: string;
@@ -55,6 +56,7 @@ export class AuditLogger {
   public clearGlobalContext(key: string): void {
     delete this.globalContext[key];
   }
+}
 
   public getGlobalContext(): Record<string, any> {
     return { ...this.globalContext }; // Return a copy
