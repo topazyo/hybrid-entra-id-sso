@@ -1,124 +1,136 @@
-import { Logger } from '../utils/Logger';
-import { RiskEngine } from '../security/RiskEngine';
-import { DeviceTrustService } from '../services/DeviceTrustService';
+// src/auth/AuthenticationChain.ts
+import { AuditLogger } from '../services/AuditLogger'; // Adjusted path
 
-interface AuthenticationContext {
+export interface AuthRequest {
   userId: string;
-  deviceId: string;
-  ipAddress: string;
-  factors: AuthenticationFactor[];
+  correlationId?: string;
+  [key: string]: any;
 }
 
-interface AuthenticationFactor {
-  type: 'password' | 'mfa' | 'certificate' | 'biometric';
-  value: any;
+export interface AuthResponse {
+  isAuthenticated: boolean;
+  userId?: string;
+  error?: string;
+  details?: any;
+}
+
+export interface AuthenticationProvider {
+  authenticate(request: AuthRequest): Promise<AuthResponse>;
+  getName(): string;
 }
 
 export class AuthenticationChain {
-  private logger: Logger;
-  private riskEngine: RiskEngine;
-  private deviceTrust: DeviceTrustService;
-  private authProviders: Map<string, AuthenticationProvider>;
+  private providers: AuthenticationProvider[] = [];
+  private auditLogger: AuditLogger;
 
-  constructor() {
-    this.logger = new Logger('AuthenticationChain');
-    this.riskEngine = new RiskEngine();
-    this.deviceTrust = new DeviceTrustService();
-    this.initializeProviders();
+  constructor(auditLogger: AuditLogger) {
+    this.auditLogger = auditLogger;
   }
 
-  private initializeProviders(): void {
-    this.authProviders = new Map([
-      ['password', new PasswordAuthProvider()],
-      ['mfa', new MFAAuthProvider()],
-      ['certificate', new CertificateAuthProvider()],
-      ['biometric', new BiometricAuthProvider()]
-    ]);
+  addProvider(provider: AuthenticationProvider): void {
+    this.providers.push(provider);
   }
 
-  async authenticate(context: AuthenticationContext): Promise<AuthenticationResult> {
-    try {
-      // Evaluate risk and determine required factors
-      const riskScore = await this.riskEngine.evaluateRisk(context);
-      const requiredFactors = await this.determineRequiredFactors(context, riskScore);
-
-      // Execute authentication chain
-      const results = await this.executeAuthenticationChain(context, requiredFactors);
-
-      // Evaluate final result
-      const finalResult = this.evaluateResults(results, requiredFactors);
-
-      await this.logAuthenticationAttempt(context, finalResult);
-      return finalResult;
-    } catch (error) {
-      this.logger.error('Authentication chain failed', { error });
-      throw new AuthenticationError('Authentication chain failed', error);
-    }
-  }
-
-  private async determineRequiredFactors(
-    context: AuthenticationContext,
-    riskScore: number
-  ): Promise<string[]> {
-    const factors = ['password']; // Base factor
-
-    if (riskScore > 0.5) {
-      factors.push('mfa');
-    }
-
-    if (riskScore > 0.8) {
-      factors.push('certificate');
-    }
-
-    const deviceTrustLevel = await this.deviceTrust.evaluateDevice(context.deviceId);
-    if (deviceTrustLevel < 0.5) {
-      factors.push('biometric');
-    }
-
-    return factors;
-  }
-
-  private async executeAuthenticationChain(
-    context: AuthenticationContext,
-    requiredFactors: string[]
-  ): Promise<AuthenticationStepResult[]> {
-    const results: AuthenticationStepResult[] = [];
-
-    for (const factor of requiredFactors) {
-      const provider = this.authProviders.get(factor);
-      if (!provider) {
-        throw new Error(`No provider found for factor: ${factor}`);
-      }
-
-      const result = await provider.authenticate(context);
-      results.push(result);
-
-      if (!result.success && this.isFactorMandatory(factor)) {
-        break;
-      }
-    }
-
-    return results;
-  }
-
-  private isFactorMandatory(factor: string): boolean {
-    return ['password', 'mfa'].includes(factor);
-  }
-
-  private evaluateResults(
-    results: AuthenticationStepResult[],
-    requiredFactors: string[]
-  ): AuthenticationResult {
-    const success = results.every(r => 
-      r.success || !this.isFactorMandatory(r.factor)
+  async execute(request: AuthRequest): Promise<AuthResponse> {
+    const correlationId = request.correlationId || `chain-${Date.now()}-${Math.random().toString(36).substring(2,7)}`;
+    this.auditLogger.logEvent(
+      'AUTH_CHAIN_START',
+      { userId: request.userId, providersInChain: this.providers.map(p => p.getName()) },
+      request.userId,
+      undefined, // clientIp
+      'PENDING',
+      correlationId
     );
 
-    return {
-      success,
-      completedFactors: results.filter(r => r.success).map(r => r.factor),
-      failedFactors: results.filter(r => !r.success).map(r => r.factor),
-      timestamp: new Date(),
-      sessionId: success ? crypto.randomUUID() : undefined
-    };
+    if (this.providers.length === 0) {
+      const noProviderResponse: AuthResponse = { isAuthenticated: false, error: 'No providers in chain' };
+      this.auditLogger.logEvent(
+        'AUTH_CHAIN_COMPLETE',
+        { result: noProviderResponse, reason: "No providers" },
+        request.userId,
+        undefined, // clientIp
+        'FAILURE',
+        correlationId
+      );
+      return noProviderResponse;
+    }
+
+    let lastResponse: AuthResponse = { isAuthenticated: false, error: 'Chain executed, but no provider succeeded definitively.' };
+
+    for (const provider of this.providers) {
+      this.auditLogger.logEvent(
+        'AUTH_PROVIDER_START',
+        { provider: provider.getName() },
+        request.userId,
+        undefined, // clientIp
+        'PENDING',
+        correlationId
+      );
+      try {
+        const response = await provider.authenticate(request);
+        lastResponse = response;
+
+        if (response.isAuthenticated) {
+          this.auditLogger.logEvent(
+            'AUTH_PROVIDER_SUCCESS',
+            { provider: provider.getName(), responseDetails: response.details },
+            response.userId,
+            undefined, // clientIp
+            'SUCCESS',
+            correlationId
+          );
+          this.auditLogger.logEvent(
+            'AUTH_CHAIN_COMPLETE',
+            { result: response, authenticatedBy: provider.getName() },
+            response.userId,
+            undefined, // clientIp
+            'SUCCESS',
+            correlationId
+          );
+          return response;
+        } else {
+          this.auditLogger.logEvent(
+            'AUTH_PROVIDER_FAILURE',
+            { provider: provider.getName(), error: response.error, responseDetails: response.details },
+            request.userId,
+            undefined, // clientIp
+            'FAILURE',
+            correlationId
+          );
+        }
+      } catch (error: any) {
+        this.auditLogger.logEvent(
+          'AUTH_PROVIDER_ERROR',
+          { provider: provider.getName(), errorMessage: error.message, stack: error.stack },
+          request.userId,
+          undefined, // clientIp
+          'FAILURE',
+          correlationId
+        );
+        const errorResponse: AuthResponse = {
+          isAuthenticated: false,
+          error: `Provider ${provider.getName()} failed with exception: ${error.message}`,
+        };
+        this.auditLogger.logEvent(
+          'AUTH_CHAIN_COMPLETE',
+          { result: errorResponse, reason: `Provider ${provider.getName()} threw error` },
+          request.userId,
+          undefined, // clientIp
+          'FAILURE',
+          correlationId
+        );
+        return errorResponse; // Stop chain on provider error
+      }
+    }
+
+    this.auditLogger.logEvent(
+      'AUTH_CHAIN_COMPLETE',
+      { result: lastResponse, reason: "No provider authenticated successfully" },
+      request.userId,
+      undefined, // clientIp
+      'FAILURE',
+      correlationId
+    );
+    return lastResponse;
   }
 }
