@@ -1,6 +1,5 @@
 // src/services/AuditLogger.ts
 
-// Define the structure for an audit log event
 export interface AuditLogEvent {
   timestamp: Date;
   eventType: string;

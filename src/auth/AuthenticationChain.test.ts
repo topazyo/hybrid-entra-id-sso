@@ -1,6 +1,9 @@
 // src/auth/AuthenticationChain.test.ts
-import { AuthenticationChain, AuthenticationProvider, AuthRequest, AuthResponse } from './AuthenticationChain'; // Import from new location
-import { AuditLogger, LogProvider, ConsoleLogProvider } from '../services/AuditLogger'; // Import real AuditLogger
+// ... (imports and mock providers as before)
+// Import AuthError if it's exported from AuthenticationChain.ts, or redefine for test checks
+import { AuthenticationChain, AuthenticationProvider, AuthRequest, AuthResponse, AuthError } from './AuthenticationChain';
+import { AuditLogger, LogProvider } from '../services/AuditLogger';
+
 
 // Mock LogProvider for testing AuditLogger
 class MockLogProvider implements LogProvider {
@@ -131,31 +134,72 @@ describe('AuthenticationChain with Real AuditLogger', () => {
     );
   });
 
-  it('should log provider error and chain completion with failure', async () => {
-    authChain.addProvider(new MockErrorProvider());
-    const request: AuthRequest = { userId: "testUser", correlationId: "corr-error" };
-    await authChain.execute(request);
+  // Modified test for provider errors:
+  it('should log provider error with structured details and chain completion with failure', async () => {
+    authChain.addProvider(new MockErrorProvider()); // This provider throws an error
+    const request: AuthRequest = { userId: "testUser", correlationId: "corr-error-structured" };
+    const response = await authChain.execute(request);
 
-    expect(logEventSpy).toHaveBeenCalledTimes(4); // CHAIN_START, P1_START, P1_ERROR, CHAIN_COMPLETE (failure)
+    // Verify the AuthResponse structure
+    expect(response.isAuthenticated).toBe(false);
+    expect(response.error).toBeDefined();
+    const structuredError = response.error as AuthError; // Type assertion
+    expect(structuredError.code).toBe('PROVIDER_EXCEPTION');
+    expect(structuredError.provider).toBe('ErrorProvider');
+    expect(structuredError.message).toBe('Provider ErrorProvider threw an unhandled exception.');
+    expect(structuredError.originalMessage).toBe('Critical error in ErrorProvider');
+
+    // Verify AuditLogger calls
+    expect(logEventSpy).toHaveBeenCalledTimes(4); // CHAIN_START, P1_START, P1_ERROR, CHAIN_COMPLETE
+
+    // Check the AUTH_PROVIDER_ERROR log
+    const expectedProviderErrorDetails = {
+      providerName: 'ErrorProvider',
+      errorCode: 'PROVIDER_EXCEPTION',
+      errorMessage: 'Critical error in ErrorProvider',
+      // stack: expect.any(String) // If stack were included
+    };
     expect(logEventSpy).toHaveBeenCalledWith(
       'AUTH_PROVIDER_ERROR',
-      expect.objectContaining({ provider: "ErrorProvider", errorMessage: "Critical error in ErrorProvider" }),
-      "testUser",
+      expect.objectContaining(expectedProviderErrorDetails),
+      request.userId,
       undefined,
       'FAILURE',
-      "corr-error"
+      request.correlationId
     );
+
+    // Check the AUTH_CHAIN_COMPLETE log
     expect(logEventSpy).toHaveBeenCalledWith(
       'AUTH_CHAIN_COMPLETE',
-      expect.objectContaining({ reason: "Provider ErrorProvider threw error" }),
-      "testUser",
+      expect.objectContaining({
+        reason: "Provider ErrorProvider threw error",
+        result: expect.objectContaining({
+          isAuthenticated: false,
+          error: structuredError // Verify the same structured error is in the logged result
+        })
+      }),
+      request.userId,
       undefined,
       'FAILURE',
-      "corr-error"
+      request.correlationId
     );
   });
 
-  // Original functional tests should still pass
+  // Original test for handling errors, ensure it's adapted or covered by the one above
+  it('original: should handle providers that throw errors (now checks structured error)', async () => {
+    authChain.addProvider(new MockErrorProvider());
+    authChain.addProvider(new MockSuccessProvider());
+
+    const response = await authChain.execute({ userId: "testUser" });
+    expect(response.isAuthenticated).toBe(false);
+    expect(response.error).toBeDefined();
+    const errorDetails = response.error as AuthError;
+    expect(errorDetails.code).toBe('PROVIDER_EXCEPTION');
+    expect(errorDetails.provider).toBe('ErrorProvider');
+    expect(errorDetails.originalMessage).toBe('Critical error in ErrorProvider');
+  });
+
+// ... (rest of the tests, e.g. original: should authenticate successfully if a provider succeeds)
   it('original: should authenticate successfully if a provider succeeds', async () => {
     authChain.addProvider(new MockFailureProvider());
     authChain.addProvider(new MockSuccessProvider());
@@ -163,14 +207,4 @@ describe('AuthenticationChain with Real AuditLogger', () => {
     expect(response.isAuthenticated).toBe(true);
     expect(response.userId).toBe("testUser");
   });
-
-  it('original: should handle providers that throw errors', async () => {
-    authChain.addProvider(new MockErrorProvider());
-    authChain.addProvider(new MockSuccessProvider());
-
-    const response = await authChain.execute({ userId: "testUser" });
-    expect(response.isAuthenticated).toBe(false);
-    expect(response.error).toContain("Provider ErrorProvider failed with exception: Critical error in ErrorProvider");
-  });
-
 });

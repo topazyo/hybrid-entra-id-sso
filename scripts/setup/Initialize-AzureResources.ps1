@@ -187,13 +187,10 @@ try {
     }
 
     # Create Web App (Node.js example)
-    # For a Function App, use New-AzFunctionApp
     Write-Host "Checking for existing Web App: $WebAppName..."
     $webApp = Get-AzWebApp -ResourceGroupName $ResourceGroupName -Name $WebAppName -ErrorAction SilentlyContinue
     if ($null -eq $webApp) {
         Write-Host "Creating Web App: $WebAppName..."
-        # For Node, common runtimes: "NODE|14-lts", "NODE|16-lts", "NODE|18-lts"
-        # For other runtimes: "DOTNETCORE|6.0", "PYTHON|3.9", "JAVA|11-java11"
         New-AzWebApp -ResourceGroupName $ResourceGroupName `
             -Name $WebAppName `
             -Location $Location `
@@ -205,15 +202,10 @@ try {
         Write-Host "Web App $WebAppName already exists."
     }
 
-    # TODO: Add Bicep/ARM template deployment logic for more complex setups for better maintainability.
-    # TODO: Configure Key Vault access policies or RBAC for the Web App's Managed Identity.
-    # TODO: Set application settings for the Web App (e.g., Key Vault URI, database connection strings).
-
     Write-Host "Azure resource initialization script execution completed successfully."
 }
 catch {
     Write-Error "An error occurred during Azure resource initialization: $($_.Exception.Message)"
     Write-Error "Script execution failed."
-    # Exit with a non-zero status code to indicate failure
     exit 1
 }

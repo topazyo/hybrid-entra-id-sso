@@ -1,5 +1,12 @@
 // src/auth/AuthenticationChain.ts
-import { AuditLogger } from '../services/AuditLogger'; // Adjusted path
+import { AuditLogger } from '../services/AuditLogger';
+
+export interface AuthError { // New interface for structured errors
+  code: string;
+  message: string;
+  provider?: string;
+  originalMessage?: string; // To store original error message if we simplify the main one
+}
 
 export interface AuthRequest {
   userId: string;
@@ -10,7 +17,7 @@ export interface AuthRequest {
 export interface AuthResponse {
   isAuthenticated: boolean;
   userId?: string;
-  error?: string;
+  error?: AuthError | string; // Can be a string for simple errors or AuthError for structured ones
   details?: any;
 }
 
@@ -36,10 +43,7 @@ export class AuthenticationChain {
     this.auditLogger.logEvent(
       'AUTH_CHAIN_START',
       { userId: request.userId, providersInChain: this.providers.map(p => p.getName()) },
-      request.userId,
-      undefined, // clientIp
-      'PENDING',
-      correlationId
+      request.userId, undefined, 'PENDING', correlationId
     );
 
     if (this.providers.length === 0) {
@@ -47,10 +51,7 @@ export class AuthenticationChain {
       this.auditLogger.logEvent(
         'AUTH_CHAIN_COMPLETE',
         { result: noProviderResponse, reason: "No providers" },
-        request.userId,
-        undefined, // clientIp
-        'FAILURE',
-        correlationId
+        request.userId, undefined, 'FAILURE', correlationId
       );
       return noProviderResponse;
     }
@@ -61,10 +62,7 @@ export class AuthenticationChain {
       this.auditLogger.logEvent(
         'AUTH_PROVIDER_START',
         { provider: provider.getName() },
-        request.userId,
-        undefined, // clientIp
-        'PENDING',
-        correlationId
+        request.userId, undefined, 'PENDING', correlationId
       );
       try {
         const response = await provider.authenticate(request);
@@ -74,62 +72,62 @@ export class AuthenticationChain {
           this.auditLogger.logEvent(
             'AUTH_PROVIDER_SUCCESS',
             { provider: provider.getName(), responseDetails: response.details },
-            response.userId,
-            undefined, // clientIp
-            'SUCCESS',
-            correlationId
+            response.userId, undefined, 'SUCCESS', correlationId
           );
           this.auditLogger.logEvent(
             'AUTH_CHAIN_COMPLETE',
             { result: response, authenticatedBy: provider.getName() },
-            response.userId,
-            undefined, // clientIp
-            'SUCCESS',
-            correlationId
+            response.userId, undefined, 'SUCCESS', correlationId
           );
           return response;
         } else {
+          // Provider explicitly failed (returned isAuthenticated: false)
           this.auditLogger.logEvent(
             'AUTH_PROVIDER_FAILURE',
-            { provider: provider.getName(), error: response.error, responseDetails: response.details },
-            request.userId,
-            undefined, // clientIp
-            'FAILURE',
-            correlationId
+            {
+              provider: provider.getName(),
+              error: response.error, // This could be string or AuthError from provider
+              responseDetails: response.details
+            },
+            request.userId, undefined, 'FAILURE', correlationId
           );
         }
       } catch (error: any) {
+        // Provider threw an exception
+        const structuredError: AuthError = {
+            code: 'PROVIDER_EXCEPTION',
+            message: `Provider ${provider.getName()} threw an unhandled exception.`,
+            provider: provider.getName(),
+            originalMessage: error.message
+        };
         this.auditLogger.logEvent(
           'AUTH_PROVIDER_ERROR',
-          { provider: provider.getName(), errorMessage: error.message, stack: error.stack },
-          request.userId,
-          undefined, // clientIp
-          'FAILURE',
-          correlationId
+          {
+            providerName: provider.getName(),
+            errorCode: structuredError.code,
+            errorMessage: error.message, // Keep original message here for detailed logging
+            // stack: error.stack // Optionally include stack, can be verbose
+          },
+          request.userId, undefined, 'FAILURE', correlationId
         );
+
         const errorResponse: AuthResponse = {
           isAuthenticated: false,
-          error: `Provider ${provider.getName()} failed with exception: ${error.message}`,
+          error: structuredError, // Return the structured error
         };
         this.auditLogger.logEvent(
           'AUTH_CHAIN_COMPLETE',
           { result: errorResponse, reason: `Provider ${provider.getName()} threw error` },
-          request.userId,
-          undefined, // clientIp
-          'FAILURE',
-          correlationId
+          request.userId, undefined, 'FAILURE', correlationId
         );
-        return errorResponse; // Stop chain on provider error
+        return errorResponse;
       }
     }
 
     this.auditLogger.logEvent(
       'AUTH_CHAIN_COMPLETE',
       { result: lastResponse, reason: "No provider authenticated successfully" },
-      request.userId,
-      undefined, // clientIp
-      'FAILURE',
-      correlationId
+      request.userId, undefined, 'FAILURE', correlationId
     );
     return lastResponse;
   }

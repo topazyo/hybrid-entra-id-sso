@@ -3,7 +3,8 @@
     Initializes basic Mainframe integration settings and performs connectivity tests.
 .DESCRIPTION
     This script is a placeholder for configuring mainframe integration.
-    It currently takes mainframe connection parameters and simulates a connectivity test.
+    It currently takes mainframe connection parameters and simulates a connectivity test
+    and mock TN3270 interactions if credentials are provided.
     Future enhancements will include actual RACF command execution or API interactions.
 .PARAMETER MainframeHost
     The hostname or IP address of the mainframe system.
@@ -17,15 +18,15 @@
 .PARAMETER MainframeConnectionType
     The type of connection or protocol (e.g., "TN3270", "FTP", "API"). Default is "TN3270".
 .NOTES
-    Version: 0.2
+    Version: 0.3
     Author: AI Assistant
 .EXAMPLE
     $password = ConvertTo-SecureString "yourMainframePassword" -AsPlainText -Force
-    ./Initialize-MainframeIntegration.ps1 -MainframeHost "mf.example.com" -MainframePort 23 -MainframeUser "MFUSER01" -MainframePasswordSecure $password
+    ./Initialize-MainframeIntegration.ps1 -MainframeHost "mf.example.com" -MainframePort 23 -MainframeUser "MFUSER01" -MainframePasswordSecure $password -Verbose
 
 .EXAMPLE
     # Example without providing password directly (e.g. if using cert-based auth or manual setup later)
-    ./Initialize-MainframeIntegration.ps1 -MainframeHost "mfprod.example.com" -MainframePort 1023 -MainframeUser "MFPRODUSR"
+    ./Initialize-MainframeIntegration.ps1 -MainframeHost "mfprod.example.com" -MainframePort 1023 -MainframeUser "MFPRODUSR" -Verbose
 #>
 
 param (
@@ -35,7 +36,7 @@ param (
     [Parameter(Mandatory=$true)]
     [int]$MainframePort,
 
-    [Parameter(Mandatory=$false)] # Might not be needed for all integration types or if just testing port
+    [Parameter(Mandatory=$false)]
     [string]$MainframeUser,
 
     [Parameter(Mandatory=$false)]
@@ -65,15 +66,13 @@ function Get-ValueOrDefault {
 # --- Connectivity Test ---
 Write-Host "Attempting basic connectivity test to $MainframeHost on port $MainframePort..."
 try {
-    # Test-NetConnection is available in PowerShell 4+
-    # For older versions, consider System.Net.Sockets.TcpClient
     $connectionResult = Test-NetConnection -ComputerName $MainframeHost -Port $MainframePort -InformationLevel Detailed -ErrorAction SilentlyContinue
 
     if ($connectionResult.TcpTestSucceeded) {
         Write-Host "Successfully connected to $MainframeHost on port $MainframePort."
-        # You could add more detailed checks here depending on the protocol
-        # For example, for FTP, you might try a passive connection
-        # For HTTP/API, you might try an Invoke-WebRequest to a known endpoint
+        Write-Verbose "TCP Test Succeeded: $($connectionResult.TcpTestSucceeded)"
+        Write-Verbose "Ping Succeeded: $($connectionResult.PingSucceeded)"
+        Write-Verbose "Ping Reply Details: $($connectionResult.PingReplyDetails().Address) ($($connectionResult.PingReplyDetails().RoundTripTime)ms)"
     } else {
         Write-Warning "Failed to connect to $MainframeHost on port $MainframePort."
         if ($connectionResult) {
@@ -88,45 +87,81 @@ catch {
 }
 
 Write-Host "--------------------------------------------------"
-Write-Host "Placeholder for Mainframe Configuration Steps (e.g., RACF commands, API setup):"
+Write-Host "Mainframe Configuration Steps (Simulated for $MainframeConnectionType):"
 
 switch ($MainframeConnectionType) {
     "TN3270" {
-        Write-Host "  - Configure TN3270 terminal profiles."
-        Write-Host "  - Set up screen scraping automation if needed (use dedicated libraries/tools)."
+        Write-Verbose "Simulating TN3270 specific setup steps..."
         if ($MainframeUser -and $MainframePasswordSecure) {
-            Write-Host "  - (Mock) Authenticating user $MainframeUser via TN3270 protocol..."
-            # TODO: Add actual TN3270 library interaction here if possible/required for setup
-            Write-Host "  - (Mock) Navigating to initial setup screen..."
+            Write-Verbose "[MOCK TN3270] Connecting to $MainframeHost:$MainframePort..."
+            Start-Sleep -Milliseconds 50 # Simulate delay
+            Write-Verbose "[MOCK TN3270] Connection established. Presenting login screen."
+            Start-Sleep -Milliseconds 50
+            Write-Verbose "[MOCK TN3270] Sending username: $MainframeUser"
+            Start-Sleep -Milliseconds 50
+            Write-Verbose "[MOCK TN3270] Sending password (length: $($MainframePasswordSecure.Length))" # DO NOT LOG ACTUAL PASSWORD
+            Start-Sleep -Milliseconds 100 # Simulate authentication delay
+            $mockLoginSuccess = $true # Assume success for mock
+            if ($mockLoginSuccess) {
+                Write-Verbose "[MOCK TN3270] Login Successful for $MainframeUser."
+                Start-Sleep -Milliseconds 50
+                Write-Verbose "[MOCK TN3270] Navigating to screen 'SYS_STATUS'..."
+                Start-Sleep -Milliseconds 100 # Simulate navigation delay
+                Write-Verbose "[MOCK TN3270] Screen 'SYS_STATUS' reached."
+                Start-Sleep -Milliseconds 50
+                $mockScreenFieldValue = "ACTIVE"
+                Write-Verbose "[MOCK TN3270] Reading field 'SystemStatus' from screen 'SYS_STATUS': '$mockScreenFieldValue'"
+                Write-Host "  [MOCK INFO] Simulated System Status from Mainframe: $mockScreenFieldValue"
+            } else {
+                Write-Warning "[MOCK TN3270] Simulated Login Failed for $MainframeUser."
+            }
+        } else {
+            Write-Host "  User credentials not provided. Skipping mock TN3270 login and navigation simulation."
+            Write-Verbose "[MOCK TN3270] To simulate login and screen navigation, provide MainframeUser and MainframePasswordSecure parameters."
         }
+        Write-Verbose "[MOCK TN3270] Further TN3270 setup would involve terminal profile configuration, HLLAPI/screen scraping setup if applicable."
     }
     "FTP" {
+        Write-Verbose "Simulating FTP specific setup steps..."
         Write-Host "  - Configure FTP client settings."
         Write-Host "  - Define secure FTP transfer protocols (FTPS/SFTP)."
         if ($MainframeUser -and $MainframePasswordSecure) {
-            Write-Host "  - (Mock) Testing FTP login for $MainframeUser..."
+            Write-Verbose "[MOCK FTP] Testing FTP login for $MainframeUser to $MainframeHost..."
             # TODO: Add actual FTP connection test with credentials
+            Write-Host "  - (Mock) FTP Login test successful for $MainframeUser."
+        } else {
+            Write-Host "  - Credentials not provided, skipping FTP login test."
         }
     }
     "API" {
-        Write-Host "  - Configure API endpoint URLs."
+        Write-Verbose "Simulating API specific setup steps..."
+        Write-Host "  - Configure API endpoint URLs for $MainframeHost."
         Write-Host "  - Set up authentication headers or client certificates for API access."
-        Write-Host "  - (Mock) Pinging health check API endpoint..."
+        Write-Verbose "[MOCK API] Pinging health check API endpoint at http://$MainframeHost/api/health (example)..."
         # TODO: Add Invoke-RestMethod to a known health or version endpoint
+        Write-Host "  - (Mock) API Health check successful."
     }
     "SSH" {
-         Write-Host "  - Configure SSH client settings, host keys."
-         Write-Host "  - (Mock) Testing SSH connection for $MainframeUser..."
-         # TODO: Add actual SSH connection test (e.g. using Posh-SSH module)
+         Write-Verbose "Simulating SSH specific setup steps..."
+         Write-Host "  - Configure SSH client settings, host keys for $MainframeHost."
+         if ($MainframeUser) {
+            Write-Verbose "[MOCK SSH] Testing SSH connection for $MainframeUser to $MainframeHost..."
+            # TODO: Add actual SSH connection test (e.g. using Posh-SSH module)
+            Write-Host "  - (Mock) SSH connection test successful for $MainframeUser."
+         } else {
+            Write-Host "  - MainframeUser not provided, skipping SSH connection test."
+         }
     }
     "MQ" {
-        Write-Host "  - Configure MQ client connection details (Queue Manager, Channel, etc.)."
+        Write-Verbose "Simulating MQ specific setup steps..."
+        Write-Host "  - Configure MQ client connection details (Queue Manager, Channel, etc.) for $MainframeHost."
         Write-Host "  - Define queues for integration."
-        Write-Host "  - (Mock) Testing connection to MQ Queue Manager..."
+        Write-Verbose "[MOCK MQ] Testing connection to MQ Queue Manager on $MainframeHost..."
         # TODO: Add MQ client library interaction
+        Write-Host "  - (Mock) MQ Connection test successful."
     }
     default {
-        Write-Warning "No specific configuration steps defined for connection type '$MainframeConnectionType'."
+        Write-Warning "No specific simulation steps defined for connection type '$MainframeConnectionType'."
     }
 }
 
@@ -137,4 +172,4 @@ Write-Host "  - Executing RACF commands to define users, permissions, or resourc
 Write-Host "  - Configuring specific integration software on the mainframe side."
 Write-Host "--------------------------------------------------"
 
-Write-Host "Mainframe Integration Initialization script execution completed (Placeholder functionality)."
+Write-Host "Mainframe Integration Initialization script execution completed."
