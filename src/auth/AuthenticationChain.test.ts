@@ -1,8 +1,53 @@
 // src/auth/AuthenticationChain.test.ts
 
+// --- Re-defined AuditLogger related interfaces/classes for self-containment ---
+// In a real setup, these would be imported from 'src/services/AuditLogger.ts'
+interface MockAuditEvent {
+  timestamp: Date;
+  eventType: string;
+  eventDetails: any;
+  userId?: string;
+  status?: 'SUCCESS' | 'FAILURE' | 'PENDING' | 'INFO';
+  correlationId?: string;
+}
+
+interface MockLogProvider {
+  info(message: string, meta?: any): void;
+  warn(message: string, meta?: any): void;
+  error(message: string, meta?: any): void;
+  clearLogs?(): void; // Optional for mock
+}
+
+class MockAuditLogger {
+  public loggedEvents: { eventType: string, eventDetails: any, userId?: string, status?: string, correlationId?: string }[] = [];
+  private logger: MockLogProvider; // Can be used internally if needed, or spy directly on logEvent
+
+  constructor(logProvider?: MockLogProvider) {
+    this.logger = logProvider || { info: ()=>{}, warn: ()=>{}, error: ()=>{} };
+  }
+
+  public logEvent(
+    eventType: string,
+    eventDetails: any,
+    userId?: string,
+    _clientIp?: string, // Not used in this simplified test mock for AuthenticationChain
+    status?: 'SUCCESS' | 'FAILURE' | 'PENDING' | 'INFO',
+    correlationId?: string
+  ): void {
+    this.loggedEvents.push({ eventType, eventDetails, userId, status, correlationId });
+  }
+
+  public clearEvents(): void {
+    this.loggedEvents = [];
+  }
+}
+// --- End of re-defined AuditLogger related items ---
+
+
 // Mock AuthenticationProvider for testing purposes
 interface MockAuthRequest {
   userId: string;
+  correlationId?: string; // Added for tracking
   [key: string]: any;
 }
 
@@ -19,52 +64,131 @@ interface MockAuthenticationProvider {
 }
 
 // Simplified AuthenticationChain class for demonstration
-// Actual implementation might be in 'AuthenticationChain.ts'
 class AuthenticationChain {
   private providers: MockAuthenticationProvider[] = [];
+  private auditLogger: MockAuditLogger; // Using MockAuditLogger
+
+  constructor(auditLogger: MockAuditLogger) { // Accept AuditLogger
+    this.auditLogger = auditLogger;
+  }
 
   addProvider(provider: MockAuthenticationProvider): void {
     this.providers.push(provider);
   }
 
   async execute(request: MockAuthRequest): Promise<MockAuthResponse> {
-    let lastResponse: MockAuthResponse = { isAuthenticated: false, error: 'No providers in chain' };
+    const correlationId = request.correlationId || `chain-${Date.now()}`;
+    this.auditLogger.logEvent(
+      'AUTH_CHAIN_START',
+      { userId: request.userId, providersInChain: this.providers.map(p => p.getName()) },
+      request.userId,
+      undefined,
+      'PENDING',
+      correlationId
+    );
+
+    if (this.providers.length === 0) {
+      const noProviderResponse = { isAuthenticated: false, error: 'No providers in chain' };
+      this.auditLogger.logEvent(
+        'AUTH_CHAIN_COMPLETE',
+        { result: noProviderResponse, reason: "No providers" },
+        request.userId,
+        undefined,
+        'FAILURE',
+        correlationId
+      );
+      return noProviderResponse;
+    }
+
+    let lastResponse: MockAuthResponse = { isAuthenticated: false, error: 'Chain executed, but no provider succeeded definitively.' };
 
     for (const provider of this.providers) {
+      this.auditLogger.logEvent(
+        'AUTH_PROVIDER_START',
+        { provider: provider.getName() },
+        request.userId,
+        undefined,
+        'PENDING',
+        correlationId
+      );
       try {
         const response = await provider.authenticate(request);
-        lastResponse = response; // Store the response from the current provider
+        lastResponse = response;
 
         if (response.isAuthenticated) {
-          // If a provider authenticates successfully, break the chain
+          this.auditLogger.logEvent(
+            'AUTH_PROVIDER_SUCCESS',
+            { provider: provider.getName(), responseDetails: response.details },
+            response.userId,
+            undefined,
+            'SUCCESS',
+            correlationId
+          );
+          this.auditLogger.logEvent(
+            'AUTH_CHAIN_COMPLETE',
+            { result: response, authenticatedBy: provider.getName() },
+            response.userId,
+            undefined,
+            'SUCCESS',
+            correlationId
+          );
           return response;
+        } else {
+          this.auditLogger.logEvent(
+            'AUTH_PROVIDER_FAILURE',
+            { provider: provider.getName(), error: response.error, responseDetails: response.details },
+            request.userId, // or response.userId if available and relevant on failure
+            undefined,
+            'FAILURE',
+            correlationId
+          );
         }
-        // If not authenticated, but no error, continue to the next provider
-        // If there was an error, it might be handled by the provider itself or logged
-        // For this simple chain, we just continue if not authenticated.
       } catch (error: any) {
-        console.error(`Error in provider ${provider.getName()}: ${error.message}`);
-        // Decide if an error from one provider should halt the chain
-        // For this example, we'll return an error response immediately.
-        return {
+        this.auditLogger.logEvent(
+          'AUTH_PROVIDER_ERROR',
+          { provider: provider.getName(), errorMessage: error.message, stack: error.stack },
+          request.userId,
+          undefined,
+          'FAILURE',
+          correlationId
+        );
+        const errorResponse = {
           isAuthenticated: false,
-          error: `Provider ${provider.getName()} failed: ${error.message}`,
+          error: `Provider ${provider.getName()} failed with exception: ${error.message}`,
         };
+        this.auditLogger.logEvent(
+          'AUTH_CHAIN_COMPLETE',
+          { result: errorResponse, reason: `Provider ${provider.getName()} threw error` },
+          request.userId,
+          undefined,
+          'FAILURE',
+          correlationId
+        );
+        return errorResponse; // Stop chain on provider error
       }
     }
-    // If no provider authenticated successfully, return the last response from the chain
+
+    // If loop completes without success or error thrown by provider
+    this.auditLogger.logEvent(
+      'AUTH_CHAIN_COMPLETE',
+      { result: lastResponse, reason: "No provider authenticated successfully" },
+      request.userId, // or lastResponse.userId if available
+      undefined,
+      'FAILURE',
+      correlationId
+    );
     return lastResponse;
   }
 }
 
-// Mock Provider Implementations
+// Mock Provider Implementations (unchanged from previous version)
 class MockSuccessProvider implements MockAuthenticationProvider {
   getName(): string { return "SuccessProvider"; }
   async authenticate(request: MockAuthRequest): Promise<MockAuthResponse> {
     if (request.userId === "testUser") {
       return { isAuthenticated: true, userId: request.userId, details: { provider: this.getName() } };
     }
-    return { isAuthenticated: false, error: "Invalid user for SuccessProvider" };
+    return { isAuthenticated: false, error: "Invalid user for SuccessProvider", details: { provider: this.getName()} };
   }
 }
 

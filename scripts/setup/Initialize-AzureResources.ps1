@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    Initializes Azure resources for the Hybrid Entra ID SSO Integration Suite.
+    Initializes Azure resources including RG, Storage, Key Vault (with a secret), App Service Plan, and Web App.
 .DESCRIPTION
-    This script creates or updates a resource group, a storage account, a key vault,
+    This script creates or updates a resource group, a storage account, a key vault (and adds a secret to it),
     an App Service Plan, and a Web App (or Function App).
     It's intended as a starting point for Azure resource deployment.
 .PARAMETER TenantId
@@ -15,6 +15,11 @@
     The globally unique name for the Azure Storage Account.
 .PARAMETER KeyVaultName
     The globally unique name for the Azure Key Vault.
+.PARAMETER KeyVaultSecretName
+    The name of the secret to create in the Key Vault. Defaults to "PlaceholderSecret".
+.PARAMETER KeyVaultSecretValue
+    The value for the secret created in the Key Vault. Defaults to "DefaultSecretValue_ChangeMe!".
+    It's recommended to change this or pass a secure string for sensitive values.
 .PARAMETER AppServicePlanName
     The name for the Azure App Service Plan.
 .PARAMETER WebAppName
@@ -22,14 +27,15 @@
 .PARAMETER Location
     The Azure region where resources will be deployed (e.g., 'EastUS').
 .NOTES
-    Version: 0.3
-    Author: AI Assistant
+    Version: 0.4
 .EXAMPLE
     ./Initialize-AzureResources.ps1 -TenantId "your-tenant-id" `
         -SubscriptionId "your-subscription-id" `
         -ResourceGroupName "MySSOResources" `
         -StorageAccountName "myssostorageaccountunique" `
         -KeyVaultName "myssokeyvaultunique" `
+        -KeyVaultSecretName "WebAppApiKey" `
+        -KeyVaultSecretValue "S0m3S3cureV@lu3" `
         -AppServicePlanName "MySSOAppPlan" `
         -WebAppName "myssowebappunique" `
         -Location "EastUS"
@@ -51,6 +57,12 @@ param (
     [Parameter(Mandatory=$true)]
     [string]$KeyVaultName,
 
+    [Parameter(Mandatory=$false)]
+    [string]$KeyVaultSecretName = "PlaceholderSecret",
+
+    [Parameter(Mandatory=$false)]
+    [string]$KeyVaultSecretValue = "DefaultSecretValue_ChangeMe!", # Or use [System.Security.SecureString] for more security
+
     [Parameter(Mandatory=$true)]
     [string]$AppServicePlanName,
 
@@ -68,10 +80,12 @@ function Connect-ToAzureTenant {
         [string]$RequiredSubscriptionId
     )
     try {
-        Write-Host "Checking for Azure PowerShell module..."
-        if (-not (Get-Module -Name Az -ListAvailable)) {
-            Write-Error "Azure PowerShell module (Az) not found. Please install it first."
-            throw "Az module not installed."
+        Write-Verbose "Checking for Azure PowerShell module..."
+        if (-not (Get-Module -Name Az.Accounts -ListAvailable) -or -not (Get-Module -Name Az.Resources -ListAvailable) -or -not (Get-Module -Name Az.Storage -ListAvailable) -or -not (Get-Module -Name Az.KeyVault -ListAvailable) -or -not (Get-Module -Name Az.Websites -ListAvailable) ) {
+            Write-Warning "One or more required Az modules (Accounts, Resources, Storage, KeyVault, Websites) not found. Ensure the full Az module is installed."
+            if (-not (Get-Module -Name Az -ListAvailable)){
+                 throw "Az module not installed."
+            }
         }
 
         $currentContext = Get-AzContext -ErrorAction SilentlyContinue
@@ -132,11 +146,28 @@ try {
             -ResourceGroupName $ResourceGroupName `
             -Location $Location `
             -Sku Standard `
-            -EnableRbacAuthorization $true ` # Recommended for new Key Vaults
+            -EnableRbacAuthorization $true `
             -ErrorAction Stop
+        $kv = Get-AzKeyVault -VaultName $KeyVaultName -ResourceGroupName $ResourceGroupName # Ensure we have the KV object
         Write-Host "Key Vault $KeyVaultName created successfully."
     } else {
         Write-Host "Key Vault $KeyVaultName already exists."
+    }
+
+    # Add/Update secret in Key Vault
+    if ($null -ne $kv) {
+        Write-Host "Setting secret '$KeyVaultSecretName' in Key Vault '$($kv.VaultName)'..."
+        # For sensitive values, $KeyVaultSecretValue should ideally be a SecureString
+        # If $KeyVaultSecretValue is already a SecureString, use: -SecretValue $KeyVaultSecretValue
+        # If it's plain text (as per param block now), convert it:
+        $secretValueSecure = ConvertTo-SecureString $KeyVaultSecretValue -AsPlainText -Force
+        Set-AzKeyVaultSecret -VaultName $kv.VaultName `
+            -Name $KeyVaultSecretName `
+            -SecretValue $secretValueSecure `
+            -ErrorAction Stop
+        Write-Host "Secret '$KeyVaultSecretName' set successfully in Key Vault '$($kv.VaultName)'."
+    } else {
+        Write-Warning "Skipping secret creation as Key Vault '$KeyVaultName' was not found or created."
     }
 
     # Create App Service Plan
@@ -147,7 +178,7 @@ try {
         New-AzAppServicePlan -ResourceGroupName $ResourceGroupName `
             -Name $AppServicePlanName `
             -Location $Location `
-            -Tier Basic # Or Standard, PremiumV2, etc. e.g. B1, S1
+            -Tier Basic `
             -Sku B1 `
             -ErrorAction Stop
         Write-Host "App Service Plan $AppServicePlanName created successfully."
