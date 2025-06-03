@@ -1,184 +1,149 @@
-import { Logger } from '../utils/Logger';
-import { LogAnalyticsClient } from '@azure/monitor-ingestion';
+// src/services/AuditLogger.ts
 
-interface AuditEvent {
-  eventType: string;
-  userId: string;
-  resourceId: string;
-  action: string;
-  result: string;
-  riskScore?: number;
-  metadata?: Record<string, any>;
+// Define the structure for an audit log event
+export interface AuditLogEvent {
   timestamp: Date;
+  eventType: string;
+  eventDetails: any;
+  userId?: string;
+  clientIp?: string;
+  status?: 'SUCCESS' | 'FAILURE' | 'PENDING' | 'INFO'; // Added INFO
+  correlationId?: string;
+}
+
+// Define a generic LogProvider interface.
+// This allows injecting different logging libraries (e.g., Winston, Pino, console)
+// or a custom logging service that might write to a database or message queue.
+export interface LogProvider {
+  info(message: string, meta?: any): void;
+  warn(message: string, meta?: any): void;
+  error(message: string, meta?: any): void;
+  debug?(message: string, meta?: any): void; // Optional debug method
+}
+
+// A simple console-based log provider for default usage if no other is provided.
+export class ConsoleLogProvider implements LogProvider {
+  private formatMeta(meta?: any): string {
+    if (!meta) return "";
+    // Basic stringification, could be more sophisticated (e.g., handling circular refs)
+    try {
+      return JSON.stringify(meta, null, 2);
+    } catch (e) {
+      return "[Unserializable Meta]";
+    }
+  }
+
+  info(message: string, meta?: any): void {
+    console.info(`[INFO] ${message} ${this.formatMeta(meta)}`);
+  }
+
+  warn(message: string, meta?: any): void {
+    console.warn(`[WARN] ${message} ${this.formatMeta(meta)}`);
+  }
+
+  error(message: string, meta?: any): void {
+    console.error(`[ERROR] ${message} ${this.formatMeta(meta)}`);
+  }
+
+  debug(message: string, meta?: any): void {
+    // console.debug is not standard on all Node versions, use log
+    console.log(`[DEBUG] ${message} ${this.formatMeta(meta)}`);
+  }
 }
 
 export class AuditLogger {
-  private logger: Logger;
-  private logAnalyticsClient: LogAnalyticsClient;
-  private retentionDays: number;
+  private logger: LogProvider;
 
-  constructor(
-    private workspaceId: string,
-    private sharedKey: string,
-    retentionDays: number = 365
-  ) {
-    this.logger = new Logger('AuditLogger');
-    this.retentionDays = retentionDays;
-    this.initializeLogAnalytics();
+  constructor(logProvider?: LogProvider) {
+    this.logger = logProvider || new ConsoleLogProvider();
+    // In a real application, you might have more complex configuration here,
+    // such as log levels, formatting, or multiple log destinations.
   }
 
-  private initializeLogAnalytics(): void {
-    this.logAnalyticsClient = new LogAnalyticsClient(
-      this.workspaceId,
-      this.sharedKey
-    );
-  }
-
-  async logEvent(event: AuditEvent): Promise<void> {
-    try {
-      const enrichedEvent = this.enrichEvent(event);
-      
-      // Log to Log Analytics
-      await this.sendToLogAnalytics(enrichedEvent);
-
-      // Log locally for immediate access
-      await this.logLocally(enrichedEvent);
-
-      // Archive if needed
-      if (this.shouldArchive(event)) {
-        await this.archiveEvent(enrichedEvent);
-      }
-    } catch (error) {
-      this.logger.error('Failed to log audit event', { error, event });
-      throw new AuditLoggingError('Failed to log audit event', error);
-    }
-  }
-
-  private enrichEvent(event: AuditEvent): AuditEvent & { 
-    correlationId: string;
-    environment: string;
-    clientIp?: string;
-    userAgent?: string;
-  } {
-    return {
-      ...event,
-      correlationId: crypto.randomUUID(),
-      environment: process.env.NODE_ENV,
-      clientIp: this.getClientIp(),
-      userAgent: this.getUserAgent(),
-      metadata: {
-        ...event.metadata,
-        applicationVersion: process.env.APP_VERSION,
-        loggedAt: new Date()
-      }
+  /**
+   * Logs a specific audit event.
+   * @param eventType - The type of event (e.g., 'USER_LOGIN', 'FILE_UPLOAD').
+   * @param eventDetails - Specific details about the event.
+   * @param userId - Optional ID of the user associated with the event.
+   * @param clientIp - Optional IP address of the client.
+   * @param status - Optional status of the event.
+   * @param correlationId - Optional ID to correlate related events.
+   */
+  public logEvent(
+    eventType: string,
+    eventDetails: any,
+    userId?: string,
+    clientIp?: string,
+    status?: 'SUCCESS' | 'FAILURE' | 'PENDING' | 'INFO',
+    correlationId?: string
+  ): void {
+    const timestamp = new Date();
+    const logEntry: AuditLogEvent = {
+      timestamp,
+      eventType,
+      eventDetails,
+      userId,
+      clientIp,
+      status: status || 'INFO', // Default to INFO if no status provided
+      correlationId,
     };
+
+    // Using the injected logger to record the event.
+    // The message "AuditEvent" can be used by log management systems to filter these logs.
+    this.logger.info('AuditEvent', logEntry);
   }
 
-  private async sendToLogAnalytics(event: AuditEvent): Promise<void> {
-    try {
-      await this.logAnalyticsClient.upload('HybridSSOAudit', [
-        this.formatForLogAnalytics(event)
-      ]);
-    } catch (error) {
-      this.logger.error('Failed to send to Log Analytics', { error, event });
-      throw error;
-    }
-  }
-
-  private async logLocally(event: AuditEvent): Promise<void> {
-    await this.logger.info('Audit event logged', {
-      eventType: event.eventType,
-      userId: event.userId,
-      action: event.action,
-      result: event.result
-    });
-  }
-
-  private shouldArchive(event: AuditEvent): boolean {
-    // Implement archiving logic based on event type or other criteria
-    const criticalEvents = ['security_breach', 'configuration_change', 'policy_override'];
-    return criticalEvents.includes(event.eventType);
-  }
-
-  private async archiveEvent(event: AuditEvent): Promise<void> {
-    // Implement long-term archiving logic
-    // This could involve storing in a separate storage account or database
-  }
-
-  private formatForLogAnalytics(event: AuditEvent): Record<string, any> {
-    return {
-      TimeGenerated: event.timestamp.toISOString(),
-      EventType: event.eventType,
-      UserId: event.userId,
-      ResourceId: event.resourceId,
-      Action: event.action,
-      Result: event.result,
-      RiskScore: event.riskScore || 0,
-      CorrelationId: event.correlationId,
-      Environment: event.environment,
-      Metadata: JSON.stringify(event.metadata)
+  /**
+   * Logs a general system activity or message.
+   * @param message - The main message to log.
+   * @param details - Additional details or context for the activity.
+   * @param level - The severity level of the log ('info', 'warn', 'error', 'debug').
+   */
+  public logSystemActivity(
+    message: string,
+    details?: any,
+    level: 'info' | 'warn' | 'error' | 'debug' = 'info'
+  ): void {
+    const logEntry = {
+        timestamp: new Date(),
+        message,
+        details: details || {}, // Ensure details is an object
     };
-  }
 
-  private getClientIp(): string | undefined {
-    // Implement client IP detection logic
-    return undefined;
-  }
-
-  private getUserAgent(): string | undefined {
-    // Implement user agent detection logic
-    return undefined;
-  }
-
-  async queryAuditLogs(
-    filters: AuditLogFilters,
-    timeRange: TimeRange
-  ): Promise<AuditEvent[]> {
-    try {
-      const query = this.buildAuditQuery(filters, timeRange);
-      const results = await this.logAnalyticsClient.query(query);
-      return this.parseQueryResults(results);
-    } catch (error) {
-      this.logger.error('Failed to query audit logs', { error, filters });
-      throw error;
+    switch(level) {
+        case 'info':
+            this.logger.info('SystemActivity', logEntry);
+            break;
+        case 'warn':
+            this.logger.warn('SystemActivity', logEntry);
+            break;
+        case 'error':
+            this.logger.error('SystemActivity', logEntry);
+            break;
+        case 'debug':
+            if (this.logger.debug) { // Check if debug method exists
+                this.logger.debug('SystemActivity', logEntry);
+            } else {
+                this.logger.info('SystemActivity [DEBUG]', logEntry); // Fallback for providers without debug
+            }
+            break;
+        default:
+            this.logger.info('SystemActivity', logEntry); // Fallback for unknown levels
+            break;
     }
   }
-
-  private buildAuditQuery(
-    filters: AuditLogFilters,
-    timeRange: TimeRange
-  ): string {
-    // Implement KQL query building logic
-    return `
-      HybridSSOAudit
-      | where TimeGenerated between(datetime('${timeRange.start}')..datetime('${timeRange.end}'))
-      ${filters.userId ? `| where UserId == '${filters.userId}'` : ''}
-      ${filters.eventType ? `| where EventType == '${filters.eventType}'` : ''}
-      | order by TimeGenerated desc
-    `;
-  }
-
-  private parseQueryResults(results: any): AuditEvent[] {
-    // Implement results parsing logic
-    return [];
-  }
 }
 
-class AuditLoggingError extends Error {
-  constructor(message: string, public cause?: Error) {
-    super(message);
-    this.name = 'AuditLoggingError';
-  }
-}
-
-interface AuditLogFilters {
-  userId?: string;
-  eventType?: string;
-  resourceId?: string;
-  result?: string;
-}
-
-interface TimeRange {
-  start: Date;
-  end: Date;
-}
+// Example of how it might be instantiated and used (optional, for illustration)
+// if (require.main === module) {
+//   const auditLogger = new AuditLogger(); // Uses ConsoleLogProvider by default
+//   auditLogger.logEvent(
+//     'USER_REGISTRATION',
+//     { username: 'johndoe', email: 'john.doe@example.com' },
+//     'user_guid_12345',
+//     '127.0.0.1',
+//     'SUCCESS'
+//   );
+//   auditLogger.logSystemActivity('Service started successfully', { port: 3000, environment: 'development' });
+//   auditLogger.logSystemActivity('A minor issue occurred', { issueCode: 101 }, 'warn');
+// }

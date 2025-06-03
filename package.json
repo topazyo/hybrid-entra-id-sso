@@ -1,0 +1,24 @@
+{
+  "name": "hybrid-entra-id-sso",
+  "version": "0.1.0",
+  "description": "Enterprise-grade solution for implementing and managing Hybrid Entra ID SSO in complex environments with legacy system integration.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "health-check": "echo \"Placeholder for health-check script\" && exit 0",
+    "test:integration": "echo \"Placeholder for integration test script\" && exit 0",
+    "verify-monitoring": "echo \"Placeholder for monitoring verification script\" && exit 0"
+  },
+  "keywords": [
+    "entra-id",
+    "sso",
+    "hybrid",
+    "mainframe",
+    "security"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {}
+}
