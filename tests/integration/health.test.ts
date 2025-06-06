@@ -118,4 +118,36 @@ describe('GET /health Integration Tests', () => {
     // expect(dbCheck?.status).toBe('DOWN');
   });
   */
+
+  it('should return 429 Too Many Requests if rate limit is exceeded', async () => {
+    const endpoint = '/health';
+    const maxRequests = 20; // Must match healthRateLimitConfig in index.ts
+    // const windowSeconds = 60; // Not directly used for jest fake timers here
+
+    // Exhaust the limit
+    // Note: Supertest requests are asynchronous. A simple loop might not guarantee order
+    // or exact timing for the underlying RateLimiter which uses Date.now().
+    // For robust rate limit testing, unit tests of RateLimiter with fake timers are more precise.
+    // This integration test provides a basic check.
+    const promises = [];
+    for (let i = 0; i < maxRequests; i++) {
+      promises.push(request(app).get(endpoint));
+    }
+    const responses = await Promise.all(promises);
+    responses.forEach(res => {
+      // Health check can be 200 or 503 if a service is temporarily down
+      expect(res.status === 200 || res.status === 503).toBe(true);
+    });
+
+    // Next request should be rate limited
+    const limitedResponse = await request(app).get(endpoint);
+    expect(limitedResponse.status).toBe(429);
+    expect(limitedResponse.body.error).toBe('Too Many Requests. Please try again later.');
+
+    // Optional: Test that after window expires, requests are allowed again
+    // This requires RateLimiter to use Jest's fake timers or careful real-time waiting.
+    // If RateLimiter was instantiated with a LogProvider that uses fake timers, this could work.
+    // However, RateLimiter in src/services/RateLimiter.ts uses Date.now() directly.
+    // Unit tests for RateLimiter are better for precise window expiration tests.
+  });
 });

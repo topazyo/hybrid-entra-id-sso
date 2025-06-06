@@ -96,4 +96,62 @@ describe('GET /config/:key Integration Tests', () => {
     expect(response.body.value).toBe('file_value_1');
   });
   */
+
+  it('should return 429 Too Many Requests if rate limit is exceeded for /config/:key', async () => {
+    const key = 'appName'; // An allowed key, known to exist
+    const endpoint = `/config/${key}`;
+    const maxRequests = 10; // Must match configRateLimitConfig in index.ts
+    // const windowSeconds = 60; // Not directly used for jest fake timers here
+
+    const promises = [];
+    for (let i = 0; i < maxRequests; i++) {
+      promises.push(request(app).get(endpoint));
+    }
+    const responses = await Promise.all(promises);
+    responses.forEach(res => {
+      expect(res.status).toBe(200); // Expect 200 for allowed requests
+    });
+
+    // Next request should be rate limited
+    const limitedResponse = await request(app).get(endpoint);
+    expect(limitedResponse.status).toBe(429);
+    expect(limitedResponse.body.error).toBe('Too Many Requests. Please try again later.');
+  });
+
+  describe('Input Validation using express-validator', () => {
+    it('should return 400 Bad Request for an empty key string (if route allowed it, e.g. /config/ )', async () => {
+      // Express default behavior for /config/:key means key must be present.
+      // Testing an effectively "empty" key by trying a key that is just whitespace (URL encoded)
+      // which the regex should then reject.
+      const response = await request(app).get('/config/%20'); // URL encoded space
+      expect(response.status).toBe(400);
+      expect(response.body.errors).toBeInstanceOf(Array);
+      expect(response.body.errors[0].msg).toContain('Key parameter contains invalid characters');
+    });
+
+    it('should return 400 Bad Request for a key with invalid characters', async () => {
+      const invalidKey = 'my!key'; // '!' is not allowed by the regex
+      const response = await request(app).get(`/config/${invalidKey}`);
+      expect(response.status).toBe(400);
+      expect(response.body.errors).toBeInstanceOf(Array);
+      expect(response.body.errors[0].msg).toContain('Key parameter contains invalid characters');
+      expect(response.body.errors[0].param).toBe('key');
+      expect(response.body.errors[0].value).toBe(invalidKey);
+    });
+
+    it('should return 400 Bad Request for a key that is too long', async () => {
+      const longKey = 'a'.repeat(256);
+      const response = await request(app).get(`/config/${longKey}`);
+      expect(response.status).toBe(400);
+      expect(response.body.errors).toBeInstanceOf(Array);
+      expect(response.body.errors[0].msg).toContain('Key parameter must be between 1 and 255 characters');
+    });
+
+    it('should still return 200 OK for a valid key after adding validation', async () => {
+        const key = 'appName';
+        const response = await request(app).get(`/config/${key}`);
+        expect(response.status).toBe(200);
+        expect(response.body.value).toBe('HybridEntraIdSsoSuite');
+    });
+  });
 });

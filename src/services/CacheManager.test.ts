@@ -171,3 +171,117 @@ describe('CacheManager', () => {
     });
   });
 });
+
+describe('CacheManager with Size Limit and Eviction', () => {
+  let cacheManagerWithLimit: CacheManager;
+  let mockLogProviderForLimitTests: MockLogProvider;
+  let logEventSpyForLimit: jest.SpyInstance;
+  // let logSystemActivitySpyForLimit: jest.SpyInstance; // if needed
+
+  const testMaxSize = 3;
+
+  beforeEach(() => {
+    mockLogProviderForLimitTests = new MockLogProvider();
+    logEventSpyForLimit = jest.spyOn(AuditLogger.prototype, 'logEvent'); // Spy on prototype for this instance too
+    // logSystemActivitySpyForLimit = jest.spyOn(AuditLogger.prototype, 'logSystemActivity');
+
+    // Pass maxSize to constructor
+    cacheManagerWithLimit = new CacheManager(mockLogProviderForLimitTests, 60, testMaxSize);
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    logEventSpyForLimit.mockRestore();
+    // logSystemActivitySpyForLimit.mockRestore();
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  it('should initialize with given maxSize', () => {
+    // logSystemActivitySpy was spied on AuditLogger.prototype, so it might pick up calls from other tests' beforeEach/afterEach
+    // if not careful. For this test, we check the specific call from this instance's constructor.
+    // For simplicity, this test relies on the constructor logging, which is already tested elsewhere.
+    // The main point is that the CacheManager is configured with testMaxSize.
+    // We can verify by filling it up.
+    for (let i = 0; i < testMaxSize; i++) {
+        cacheManagerWithLimit.set(`key${i}`, `value${i}`);
+    }
+    expect(cacheManagerWithLimit.count()).toBe(testMaxSize);
+    // Adding one more should trigger eviction if maxSize is working
+    cacheManagerWithLimit.set('newKey', 'newValue');
+    expect(cacheManagerWithLimit.count()).toBe(testMaxSize); // Still at max size
+  });
+
+  it('should not exceed maxSize', () => {
+    for (let i = 0; i < testMaxSize + 2; i++) { // Try to add more than maxSize
+      cacheManagerWithLimit.set(`item${i}`, `data${i}`);
+    }
+    expect(cacheManagerWithLimit.count()).toBe(testMaxSize);
+  });
+
+  it('should evict the oldest item (FIFO) when maxSize is reached and a new key is added', () => {
+    cacheManagerWithLimit.set('keyA', 'valA'); // Oldest
+    cacheManagerWithLimit.set('keyB', 'valB');
+    cacheManagerWithLimit.set('keyC', 'valC'); // Max size reached (3)
+    expect(cacheManagerWithLimit.count()).toBe(3);
+
+    // This new key should cause 'keyA' to be evicted
+    cacheManagerWithLimit.set('keyD', 'valD');
+
+    expect(cacheManagerWithLimit.count()).toBe(3);
+    expect(cacheManagerWithLimit.get('keyA')).toBeUndefined(); // keyA should be gone
+    expect(cacheManagerWithLimit.get('keyB')).toBe('valB');
+    expect(cacheManagerWithLimit.get('keyC')).toBe('valC');
+    expect(cacheManagerWithLimit.get('keyD')).toBe('valD'); // keyD should be present
+
+    expect(logEventSpyForLimit).toHaveBeenCalledWith('CACHE_EVICTION_FIFO',
+      expect.objectContaining({
+        evictedKey: 'keyA',
+        newKey: 'keyD',
+        cacheSizeBeforeEviction: testMaxSize,
+        maxCacheSize: testMaxSize
+      }),
+      undefined, undefined, 'INFO'
+    );
+  });
+
+  it('should update an existing key without eviction when cache is full', () => {
+    cacheManagerWithLimit.set('key1', 'val1');
+    cacheManagerWithLimit.set('key2', 'val2');
+    cacheManagerWithLimit.set('key3', 'val3'); // Cache is full (maxSize = 3)
+
+    // Update key2
+    cacheManagerWithLimit.set('key2', 'updatedVal2');
+
+    expect(cacheManagerWithLimit.count()).toBe(3);
+    expect(cacheManagerWithLimit.get('key1')).toBe('val1');
+    expect(cacheManagerWithLimit.get('key2')).toBe('updatedVal2'); // Value updated
+    expect(cacheManagerWithLimit.get('key3')).toBe('val3');
+
+    // Check that no eviction event was logged for this update
+    const evictionLog = mockLogProviderForLimitTests.logs.find(
+        log => log.message === 'AuditEvent' && log.meta?.eventType === 'CACHE_EVICTION_FIFO'
+    );
+    expect(evictionLog).toBeUndefined();
+  });
+
+  it('should evict multiple items if multiple new items are added past maxSize', () => {
+    cacheManagerWithLimit.set('a', 1);
+    cacheManagerWithLimit.set('b', 2);
+    cacheManagerWithLimit.set('c', 3); // Full: a, b, c
+
+    cacheManagerWithLimit.set('d', 4); // Evicts 'a'. Cache: b, c, d
+    expect(cacheManagerWithLimit.get('a')).toBeUndefined();
+    expect(cacheManagerWithLimit.get('b')).toBe(2);
+    expect(cacheManagerWithLimit.get('d')).toBe(4);
+    expect(logEventSpyForLimit).toHaveBeenCalledWith('CACHE_EVICTION_FIFO', expect.objectContaining({ evictedKey: 'a', newKey: 'd' }), undefined, undefined, 'INFO');
+
+    cacheManagerWithLimit.set('e', 5); // Evicts 'b'. Cache: c, d, e
+    expect(cacheManagerWithLimit.get('b')).toBeUndefined();
+    expect(cacheManagerWithLimit.get('c')).toBe(3);
+    expect(cacheManagerWithLimit.get('e')).toBe(5);
+    expect(logEventSpyForLimit).toHaveBeenCalledWith('CACHE_EVICTION_FIFO', expect.objectContaining({ evictedKey: 'b', newKey: 'e' }), undefined, undefined, 'INFO');
+
+    expect(cacheManagerWithLimit.count()).toBe(testMaxSize);
+  });
+});

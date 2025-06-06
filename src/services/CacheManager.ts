@@ -9,21 +9,23 @@ interface CacheEntry<T = any> {
 export class CacheManager {
   private cache: Map<string, CacheEntry> = new Map();
   private auditLogger: AuditLogger;
-  private defaultTTLSeconds: number = 60 * 5; // Default 5 minutes
+  private defaultTTLSeconds: number = 60 * 5;
+  private maxSize: number; // Added for size limit
 
-  constructor(logProvider?: LogProvider, defaultTTLSeconds?: number) {
+  constructor(logProvider?: LogProvider, defaultTTLSeconds?: number, maxSize: number = 1000) { // Added maxSize
     this.auditLogger = new AuditLogger(logProvider || new ConsoleLogProvider());
     this.auditLogger.setGlobalContext('service', 'CacheManager');
     if (defaultTTLSeconds !== undefined && defaultTTLSeconds > 0) {
       this.defaultTTLSeconds = defaultTTLSeconds;
     }
-    this.auditLogger.logSystemActivity('CacheManager initialized', { defaultTTLSeconds: this.defaultTTLSeconds });
-
-    // Optional: Start a periodic cleanup interval for expired keys
-    // setInterval(() => this.cleanupExpiredKeys(), this.defaultTTLSeconds * 1000);
-    // For simplicity in this subtask, cleanup is done on get/has.
+    this.maxSize = maxSize > 0 ? maxSize : 1000; // Ensure maxSize is positive
+    this.auditLogger.logSystemActivity('CacheManager initialized', {
+      defaultTTLSeconds: this.defaultTTLSeconds,
+      maxSize: this.maxSize
+    });
   }
 
+  // ... (isExpired, cleanupKeyIfExpired, get methods as before)
   private isExpired(entry: CacheEntry): boolean {
     if (entry.expiresAt && entry.expiresAt <= Date.now()) {
       return true;
@@ -43,29 +45,44 @@ export class CacheManager {
 
   public get<T = any>(key: string): T | undefined {
     const entry = this.cache.get(key);
-
     if (!entry) {
       this.auditLogger.logEvent('CACHE_MISS', { key }, undefined, undefined, 'INFO');
       return undefined;
     }
-
     if (this.cleanupKeyIfExpired(key, entry)) {
       this.auditLogger.logEvent('CACHE_MISS', { key, reason: 'expired' }, undefined, undefined, 'INFO');
       return undefined;
     }
-
     this.auditLogger.logEvent('CACHE_HIT', { key }, undefined, undefined, 'SUCCESS');
     return entry.value as T;
   }
+
 
   public set<T = any>(key: string, value: T, ttlSeconds?: number): void {
     const effectiveTTL = ttlSeconds !== undefined && ttlSeconds > 0 ? ttlSeconds : this.defaultTTLSeconds;
     const expiresAt = Date.now() + (effectiveTTL * 1000);
 
+    // Eviction logic: If key is new and cache is full or over size, evict oldest.
+    // If key already exists, we are just updating it, so size doesn't change.
+    // Eviction only occurs when adding a *new* element to a *full* cache.
+    if (!this.cache.has(key) && this.cache.size >= this.maxSize) {
+        const oldestKey = this.cache.keys().next().value; // FIFO: Map maintains insertion order
+        if (oldestKey) { // Should always be true if cache.size >= maxSize > 0
+            this.cache.delete(oldestKey); // Use direct delete, del() would log CACHE_DELETE
+            this.auditLogger.logEvent('CACHE_EVICTION_FIFO', {
+                evictedKey: oldestKey,
+                newKey: key,
+                cacheSizeBeforeEviction: this.maxSize, // It was at maxSize
+                maxCacheSize: this.maxSize
+            }, undefined, undefined, 'INFO');
+        }
+    }
+
     this.cache.set(key, { value, expiresAt });
-    this.auditLogger.logEvent('CACHE_SET', { key, ttlSeconds: effectiveTTL /* value: value - avoid logging sensitive values */ }, undefined, undefined, 'SUCCESS');
+    this.auditLogger.logEvent('CACHE_SET', { key, ttlSeconds: effectiveTTL }, undefined, undefined, 'SUCCESS');
   }
 
+  // ... (del, clear, has, count, cleanupExpiredKeys methods as before)
   public del(key: string): boolean {
     const deleted = this.cache.delete(key);
     if (deleted) {
@@ -84,7 +101,6 @@ export class CacheManager {
 
   public has(key: string): boolean {
     if (!this.cache.has(key)) return false;
-    // Check if expired and remove if so, then return false
     if (this.cleanupKeyIfExpired(key)) {
         return false;
     }
@@ -92,16 +108,13 @@ export class CacheManager {
   }
 
   public count(): number {
-    // Optionally, cleanup before count for accuracy, but might be slow
-    // Array.from(this.cache.keys()).forEach(key => this.cleanupKeyIfExpired(key));
     return this.cache.size;
   }
 
-  // Manual cleanup for all expired keys, could be called periodically
   public cleanupExpiredKeys(): number {
     let removedCount = 0;
-    for (const key of this.cache.keys()) {
-        if (this.cleanupKeyIfExpired(key)) {
+    for (const key of this.cache.keys()) { // Iterate over keys to avoid issues with deleting during iteration if using entries()
+        if (this.cleanupKeyIfExpired(key)) { // cleanupKeyIfExpired also deletes
             removedCount++;
         }
     }
