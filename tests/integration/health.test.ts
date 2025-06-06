@@ -5,7 +5,6 @@ import { HealthStatus } from '../../src/controllers/HealthController'; // For ty
 
 // Note: For these integration tests to run correctly, the Express app
 // should ideally not auto-start listening in src/index.ts when imported.
-// ... (rest of the initial comments)
 
 describe('GET /health Integration Tests', () => {
 
