@@ -143,6 +143,7 @@ export class RateLimiter {
       this.auditLogger.logSystemActivity('RateLimiter.clearAll called, but store may not support it or no specific implementation.', {}, 'warn');
       // For InMemoryRateLimitStore, this won't be an issue.
     }
+    return false;
   }
 
   public async resetIdentifier(identifier: string): Promise<boolean> {
