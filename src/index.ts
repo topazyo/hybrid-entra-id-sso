@@ -6,7 +6,12 @@ import { ConfigurationManager } from './services/ConfigurationManager';
 import { RateLimiter } from './services/RateLimiter';
 import { MainframeAuthBridge } from './middleware/MainframeAuthBridge';
 import { RacfIntegrationService } from './services/RacfIntegrationService';
-import { securityHeadersMiddleware } from './middleware/SecurityHeadersMiddleware'; // Import new middleware
+import { securityHeadersMiddleware } from './middleware/SecurityHeadersMiddleware';
+import { param, validationResult } from 'express-validator'; // Removed matchedData as it's not used
+
+// Import AuthenticationChain and Providers
+import { AuthenticationChain } from './auth/AuthenticationChain';
+import { RacfPasswordProvider } from './auth/RacfPasswordProvider';
 
 // Initialize services
 const auditLogger = new AuditLogger(new ConsoleLogProvider());
@@ -22,7 +27,15 @@ configManager.set('appVersion', '0.1.0-running');
 const healthController = new HealthController(new ConsoleLogProvider(), configManager, configManager.get('appVersion', '0.1.0-default'));
 const rateLimiter = new RateLimiter(new ConsoleLogProvider());
 const racfService = new RacfIntegrationService(new ConsoleLogProvider());
-const mainframeAuthBridge = new MainframeAuthBridge(auditLogger, racfService);
+
+// Setup AuthenticationChain
+const authChain = new AuthenticationChain(auditLogger); // Pass auditLogger to AuthChain
+const racfPasswordProvider = new RacfPasswordProvider(racfService, new ConsoleLogProvider());
+authChain.addProvider(racfPasswordProvider);
+// Potentially add other providers to the chain here in the future
+
+// Instantiate MainframeAuthBridge with AuditLogger and the configured AuthenticationChain
+const mainframeAuthBridge = new MainframeAuthBridge(auditLogger, authChain);
 
 
 const app: Express = express();
@@ -31,9 +44,8 @@ const PORT: number = parseInt(configManager.get('port', configManager.get('defau
 
 // --- Global Middleware ---
 app.use(express.json());
-app.use(securityHeadersMiddleware); // Add security headers middleware globally
+app.use(securityHeadersMiddleware);
 
-// Request logging middleware (as before)
 app.use((req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
   const correlationId = req.headers['x-correlation-id'] || `http-${Date.now()}-${Math.random().toString(36).substring(2,7)}`;

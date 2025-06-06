@@ -11,7 +11,13 @@ export interface AuthError { // New interface for structured errors
 export interface AuthRequest {
   userId: string;
   correlationId?: string;
-  [key: string]: any;
+  credentials?: {
+    type?: 'password' | 'token' | 'otp' | string; // Type of credential
+    password?: string;
+    token?: string;
+    [key: string]: any; // For other credential types
+  };
+  [key: string]: any; // Keep this for other arbitrary context data
 }
 
 export interface AuthResponse {
