@@ -1,96 +1,41 @@
+// src/middleware/SecurityHeadersMiddleware.ts
 import { Request, Response, NextFunction } from 'express';
-import { Logger } from '../utils/Logger';
 
-export class SecurityHeadersMiddleware {
-    private logger: Logger;
-    private options: SecurityHeadersOptions;
+export function securityHeadersMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // Sets X-Content-Type-Options to prevent browsers from MIME-sniffing a response away from the declared content-type.
+  res.setHeader('X-Content-Type-Options', 'nosniff');
 
-    constructor(options?: Partial<SecurityHeadersOptions>) {
-        this.logger = new Logger('SecurityHeadersMiddleware');
-        this.options = {
-            hsts: true,
-            noSniff: true,
-            xssProtection: true,
-            frameOptions: 'DENY',
-            ...options
-        };
-    }
+  // Sets X-Frame-Options to indicate whether a browser should be allowed to render a page in a <frame>, <iframe>, <embed> or <object>.
+  // 'DENY' - no rendering within a frame.
+  // 'SAMEORIGIN' - allow if frame is from the same origin.
+  res.setHeader('X-Frame-Options', 'DENY');
 
-    middleware = (req: Request, res: Response, next: NextFunction): void => {
-        try {
-            // Set security headers
-            if (this.options.hsts) {
-                res.setHeader(
-                    'Strict-Transport-Security',
-                    'max-age=31536000; includeSubDomains; preload'
-                );
-            }
+  // Sets Strict-Transport-Security to tell browsers to prefer HTTPS and to remember it.
+  // max-age is in seconds. includeSubDomains is optional.
+  // Only send HSTS header if the connection is secure (HTTPS) or if explicitly configured for development behind a TLS-terminating proxy.
+  // For this example, we'll assume a config flag or req.secure check.
+  // Let's simplify for now and always set it, but in prod, req.secure is important.
+  // if (req.secure || process.env.NODE_ENV === 'development_with_proxy_ssl') { // More robust check
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  // }
 
-            if (this.options.noSniff) {
-                res.setHeader('X-Content-Type-Options', 'nosniff');
-            }
+  // Sets X-XSS-Protection to enable the XSS filtering in browsers.
+  // '1; mode=block' - enable XSS filtering and prevent rendering if an attack is detected.
+  // Note: Modern browsers often have their own XSS protection, and CSP is generally preferred.
+  // Some security advisors recommend disabling it (X-XSS-Protection: 0) if you have a strong CSP.
+  res.setHeader('X-XSS-Protection', '1; mode=block');
 
-            if (this.options.xssProtection) {
-                res.setHeader('X-XSS-Protection', '1; mode=block');
-            }
+  // Content Security Policy (CSP) - very basic example.
+  // A real CSP would be much more detailed and specific to the application's needs.
+  // Example: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+  // For a simple API, a restrictive policy is good.
+  res.setHeader('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'; form-action 'self';");
 
-            res.setHeader('X-Frame-Options', this.options.frameOptions);
-            res.setHeader('Content-Security-Policy', this.generateCSP());
-            res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-            res.setHeader('Permissions-Policy', this.generatePermissionsPolicy());
+  // Referrer-Policy
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
 
-            // Add security response headers
-            res.on('finish', () => {
-                this.logSecurityHeaders(req, res);
-            });
+  // Permissions-Policy (Feature-Policy) - Example: disable microphone and geolocation
+  res.setHeader('Permissions-Policy', 'microphone=(), geolocation=()');
 
-            next();
-        } catch (error) {
-            this.logger.error('Error in security headers middleware', { error });
-            next(error);
-        }
-    };
-
-    private generateCSP(): string {
-        return [
-            "default-src 'self'",
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-            "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data: https:",
-            "font-src 'self'",
-            "connect-src 'self'",
-            "media-src 'none'",
-            "object-src 'none'",
-            "frame-src 'none'",
-            "base-uri 'self'",
-            "form-action 'self'"
-        ].join('; ');
-    }
-
-    private generatePermissionsPolicy(): string {
-        return [
-            'geolocation=()',
-            'microphone=()',
-            'camera=()',
-            'payment=()',
-            'usb=()',
-            'magnetometer=()',
-            'accelerometer=()'
-        ].join(', ');
-    }
-
-    private logSecurityHeaders(req: Request, res: Response): void {
-        this.logger.debug('Security headers applied', {
-            path: req.path,
-            method: req.method,
-            headers: res.getHeaders()
-        });
-    }
-}
-
-interface SecurityHeadersOptions {
-    hsts: boolean;
-    noSniff: boolean;
-    xssProtection: boolean;
-    frameOptions: 'DENY' | 'SAMEORIGIN';
+  next();
 }
