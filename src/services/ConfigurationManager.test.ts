@@ -1,6 +1,12 @@
 // src/services/ConfigurationManager.test.ts
 import { ConfigurationManager } from './ConfigurationManager';
-import { AuditLogger, LogProvider } from './AuditLogger'; // Assuming AuditLogger is in the same directory for simplicity or adjust path
+import { AuditLogger, LogProvider } from './AuditLogger';
+import fs from 'fs'; // Import fs for mocking
+import path from 'path'; // Import path for mocking path.resolve if necessary
+
+// Mock the fs module
+jest.mock('fs');
+const mockedFs = fs as jest.Mocked<typeof fs>; // Typesafe mock
 
 // Mock LogProvider for testing AuditLogger within ConfigurationManager
 class MockLogProvider implements LogProvider {
@@ -129,9 +135,76 @@ describe('ConfigurationManager', () => {
   });
 
   describe('loadFromFile', () => {
-    it('should log a warning as it is not implemented', () => {
-        configManager.loadFromFile('dummy/path.json');
-        expect(logSystemActivitySpy).toHaveBeenCalledWith('loadFromFile method called (not implemented)', { filePath: 'dummy/path.json' }, 'warn');
+    const testFilePath = 'config/test-config.json';
+    const resolvedTestFilePath = path.resolve(testFilePath); // Match what's used in implementation
+
+    beforeEach(() => {
+        // Reset mocks for fs before each test in this describe block
+        mockedFs.existsSync.mockReset();
+        mockedFs.readFileSync.mockReset();
+        // jest.spyOn(JSON, 'parse').mockReset(); // If directly mocking JSON.parse
+    });
+
+    it('should load configuration from a valid JSON file and merge it', () => {
+      const fileConfig = { 'file.setting': 'loadedFromFile', 'common.setting': 'overriddenByFile' };
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue(JSON.stringify(fileConfig));
+
+      configManager.set('common.setting', 'initialValue');
+      configManager.set('existing.setting', 'remainsUnchanged');
+
+      const success = configManager.loadFromFile(testFilePath);
+      expect(success).toBe(true);
+      expect(configManager.get('file.setting')).toBe('loadedFromFile');
+      expect(configManager.get('common.setting')).toBe('overriddenByFile');
+      expect(configManager.get('existing.setting')).toBe('remainsUnchanged');
+      expect(logSystemActivitySpy).toHaveBeenCalledWith('Attempting to load configuration from file', { filePath: testFilePath });
+      expect(logSystemActivitySpy).toHaveBeenCalledWith(`Successfully loaded ${Object.keys(fileConfig).length} keys from configuration file`, { filePath: resolvedTestFilePath, keysLoaded: Object.keys(fileConfig) });
+    });
+
+    it('should return false and log error if file not found', () => {
+      mockedFs.existsSync.mockReturnValue(false);
+      const success = configManager.loadFromFile('nonexistent.json');
+      expect(success).toBe(false);
+      expect(logSystemActivitySpy).toHaveBeenCalledWith('Configuration file not found', { filePath: path.resolve('nonexistent.json') }, 'error');
+    });
+
+    it('should return false and log error if JSON is invalid', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('this is not json');
+      // JSON.parse will throw an error
+      const success = configManager.loadFromFile(testFilePath);
+      expect(success).toBe(false);
+      expect(logSystemActivitySpy).toHaveBeenCalledWith(
+        'Failed to load or parse configuration file',
+        expect.objectContaining({
+            filePath: testFilePath,
+            errorName: 'SyntaxError' // Or whatever error JSON.parse throws for invalid string
+        }),
+        'error'
+      );
+    });
+
+    it('should return false and log error if file content is not an object', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue(JSON.stringify("a string, not an object"));
+      const success = configManager.loadFromFile(testFilePath);
+      expect(success).toBe(false);
+      expect(logSystemActivitySpy).toHaveBeenCalledWith(
+        'Invalid configuration format in file (not an object)',
+        { filePath: resolvedTestFilePath },
+        'error'
+      );
+    });
+
+    it('should override existing keys with values from file', () => {
+        configManager.set('feature.toggle', 'oldValue');
+        const fileConfig = { 'feature.toggle': 'newValueFromFile' };
+        mockedFs.existsSync.mockReturnValue(true);
+        mockedFs.readFileSync.mockReturnValue(JSON.stringify(fileConfig));
+
+        configManager.loadFromFile(testFilePath);
+        expect(configManager.get('feature.toggle')).toBe('newValueFromFile');
     });
   });
 });

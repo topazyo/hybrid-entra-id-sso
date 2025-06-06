@@ -1,5 +1,7 @@
 // src/services/ConfigurationManager.ts
 import { AuditLogger, LogProvider, ConsoleLogProvider } from './AuditLogger';
+import fs from 'fs'; // Import fs module for file operations
+import path from 'path'; // Import path module for robust path handling (optional but good)
 
 export class ConfigurationManager {
   private config: Record<string, any> = {};
@@ -17,23 +19,20 @@ export class ConfigurationManager {
     }
   }
 
+  // ... (get, set, getAll, loadFromEnv methods as before)
   public get<T = any>(key: string, defaultValue?: T): T | undefined {
     const value = this.config[key];
     if (value === undefined && defaultValue !== undefined) {
       this.auditLogger.logSystemActivity('Configuration key not found, returning default value', { key, defaultValueProvided: true }, 'warn');
       return defaultValue;
     }
-    // Avoid logging sensitive values directly in production by default.
-    // For this example, we log that a key was accessed.
-    // Consider adding a "sensitiveKeys" list to skip logging values for those.
     this.auditLogger.logSystemActivity('Configuration key accessed', { key, found: value !== undefined });
     return value;
   }
 
   public set(key: string, value: any): void {
     this.config[key] = value;
-    // Avoid logging the actual value if it's sensitive.
-    this.auditLogger.logSystemActivity('Configuration key set', { key /*, value: value */ }); // Value commented out for security
+    this.auditLogger.logSystemActivity('Configuration key set', { key });
   }
 
   public getAll(): Record<string, any> {
@@ -45,11 +44,11 @@ export class ConfigurationManager {
     this.auditLogger.logSystemActivity('Attempting to load configuration from environment variables', { prefix });
     for (const envVar in process.env) {
       if (envVar.startsWith(prefix)) {
-        const key = envVar.substring(prefix.length).toLowerCase().replace(/__/g, '.'); // Example: APP_CONFIG_USER__NAME -> user.name
+        const key = envVar.substring(prefix.length).toLowerCase().replace(/__/g, '.');
         const value = process.env[envVar];
-        this.config[key] = value;
+        this.config[key] = value; // Env vars override existing of same key
         loadedCount++;
-        this.auditLogger.logSystemActivity('Loaded configuration from env var', { envVar, key /*, value: value */ }); // Value commented out
+        this.auditLogger.logSystemActivity('Loaded configuration from env var', { envVar, key });
       }
     }
     if (loadedCount > 0) {
@@ -59,19 +58,31 @@ export class ConfigurationManager {
     }
   }
 
-  public loadFromFile(filePath: string): void {
-    // Placeholder for loading from a JSON or .env file.
-    // This would involve fs.readFileSync and JSON.parse or a dotenv library.
-    // For this subtask, we'll keep it simple.
-    this.auditLogger.logSystemActivity('loadFromFile method called (not implemented)', { filePath }, 'warn');
-    // Example (if implemented):
-    // try {
-    //   const fileContent = fs.readFileSync(filePath, 'utf-8');
-    //   const parsedConfig = JSON.parse(fileContent);
-    //   this.config = { ...this.config, ...parsedConfig };
-    //   this.auditLogger.logSystemActivity('Configuration loaded from file', { filePath, keys: Object.keys(parsedConfig) });
-    // } catch (error: any) {
-    //   this.auditLogger.logSystemActivity('Failed to load configuration from file', { filePath, error: error.message }, 'error');
-    // }
+  public loadFromFile(filePath: string): boolean { // Return boolean for success/failure
+    this.auditLogger.logSystemActivity('Attempting to load configuration from file', { filePath });
+    try {
+      // Resolve path relative to current working directory or use an absolute path
+      const resolvedPath = path.resolve(filePath); // Makes path handling more robust
+      if (!fs.existsSync(resolvedPath)) {
+          this.auditLogger.logSystemActivity('Configuration file not found', { filePath: resolvedPath }, 'error');
+          return false;
+      }
+      const fileContent = fs.readFileSync(resolvedPath, 'utf-8');
+      const parsedConfig = JSON.parse(fileContent);
+
+      if (typeof parsedConfig !== 'object' || parsedConfig === null) {
+        this.auditLogger.logSystemActivity('Invalid configuration format in file (not an object)', { filePath: resolvedPath }, 'error');
+        return false;
+      }
+
+      // Merge: Keys from file override existing keys
+      this.config = { ...this.config, ...parsedConfig };
+      const loadedKeys = Object.keys(parsedConfig);
+      this.auditLogger.logSystemActivity(`Successfully loaded ${loadedKeys.length} keys from configuration file`, { filePath: resolvedPath, keysLoaded: loadedKeys });
+      return true;
+    } catch (error: any) {
+      this.auditLogger.logSystemActivity('Failed to load or parse configuration file', { filePath, errorName: error.name, errorMessage: error.message }, 'error');
+      return false;
+    }
   }
 }

@@ -80,50 +80,57 @@ app.get('/health', async (req: Request, res: Response) => {
   }
 });
 
-// --- Add new /config/:key route ---
-const SENSITIVE_KEY_PATTERNS = [/secret/i, /password/i, /key/i, /token/i]; // Case-insensitive patterns
-const ALLOWED_CONFIG_KEYS = ['healthCheck.testKey', 'defaultPort', 'appVersion', 'appName']; // Explicitly allowed keys
+// --- Updated /config/:key route with input validation ---
+const SENSITIVE_KEY_PATTERNS = [/secret/i, /password/i, /key/i, /token/i];
+const ALLOWED_CONFIG_KEYS = ['healthCheck.testKey', 'defaultPort', 'appVersion', 'appName'];
+const VALID_CONFIG_KEY_REGEX = /^[a-zA-Z0-9_.-]{1,255}$/; // Added min/max length, adjust as needed
 
 app.get('/config/:key', (req: Request, res: Response) => {
   const { key } = req.params;
   const correlationId = req.headers['x-correlation-id'] as string | undefined;
 
-  // Check if the key is sensitive and not explicitly allowed
+  // 1. Input Validation
+  if (!VALID_CONFIG_KEY_REGEX.test(key)) {
+    auditLogger.logEvent(
+      'CONFIG_ACCESS_VALIDATION_ERROR',
+      { key, reason: 'Invalid key format', regex: VALID_CONFIG_KEY_REGEX.source },
+      undefined, // userId
+      req.ip,    // clientIp
+      'FAILURE',
+      correlationId
+    );
+    res.status(400).json({ error: `Invalid key format. Key must be 1-255 chars and match ${VALID_CONFIG_KEY_REGEX.source}.` });
+    return;
+  }
+
+  // 2. Security Filter (as before)
   const isSensitive = SENSITIVE_KEY_PATTERNS.some(pattern => pattern.test(key)) && !ALLOWED_CONFIG_KEYS.includes(key);
 
   if (isSensitive) {
     auditLogger.logEvent(
       'CONFIG_ACCESS_DENIED',
       { key, reason: 'Sensitive key access restricted' },
-      undefined, // userId
-      req.ip,    // clientIp
-      'FAILURE',
-      correlationId
+      undefined, req.ip, 'FAILURE', correlationId
     );
     res.status(403).json({ error: 'Access to this configuration key is restricted.' });
     return;
   }
 
+  // 3. Retrieve Configuration Value (as before)
   const value = configManager.get(key);
 
   if (value !== undefined) {
     auditLogger.logEvent(
       'CONFIG_ACCESS_SUCCESS',
-      { key /* value: value - avoid logging sensitive values if any slip through filter */ },
-      undefined,
-      req.ip,
-      'SUCCESS',
-      correlationId
+      { key /* value: value */ },
+      undefined, req.ip, 'SUCCESS', correlationId
     );
     res.status(200).json({ key, value });
   } else {
     auditLogger.logEvent(
       'CONFIG_ACCESS_NOT_FOUND',
       { key },
-      undefined,
-      req.ip,
-      'INFO', // Not necessarily a failure, just info that it wasn't found
-      correlationId
+      undefined, req.ip, 'INFO', correlationId
     );
     res.status(404).json({ error: `Configuration key '${key}' not found.` });
   }
