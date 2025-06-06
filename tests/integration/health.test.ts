@@ -15,7 +15,6 @@ describe('GET /health Integration Tests', () => {
     expect(response.body).toBeDefined();
 
     // Check body content
-
     const healthStatus = response.body as HealthStatus;
     expect(healthStatus.status).toBe('UP');
     expect(healthStatus.timestamp).toBeDefined();
