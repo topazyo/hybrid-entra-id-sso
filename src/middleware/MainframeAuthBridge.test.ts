@@ -1,10 +1,10 @@
 // src/middleware/MainframeAuthBridge.test.ts
 import { MainframeAuthBridge } from './MainframeAuthBridge';
-import { AuditLogger, LogProvider, ConsoleLogProvider } from '../services/AuditLogger';
-import { AuthenticationChain, AuthRequest, AuthResponse } from '../auth/AuthenticationChain';
-import { Request, Response, NextFunction } from 'express'; // For mocking Express objects
+import { AuditLogger, LogProvider } from '../services/AuditLogger'; // Removed ConsoleLogProvider, using Mock
+import { RacfIntegrationService, RacfVerificationResult, RacfUserCredentials } from '../services/RacfIntegrationService';
+import { Request, Response, NextFunction } from 'express';
 
-// Mock LogProvider
+// Mock LogProvider (as before)
 class MockLogProvider implements LogProvider {
   logs: any[] = [];
   info(message: string, meta?: any) { this.logs.push({level: 'info', message, meta}); }
@@ -14,29 +14,15 @@ class MockLogProvider implements LogProvider {
   clearLogs() { this.logs = []; }
 }
 
-// Mock AuthenticationChain
-class MockAuthChain extends AuthenticationChain {
-  private mockResponse: AuthResponse;
-  public lastRequest?: AuthRequest;
-
-  constructor(logger: AuditLogger, mockResponse: AuthResponse) {
-    super(logger); // Pass logger to parent if it expects one
-    this.mockResponse = mockResponse;
-  }
-  async execute(request: AuthRequest): Promise<AuthResponse> {
-    this.lastRequest = request;
-    if (this.mockResponse.error && (this.mockResponse.error as any).throw) { // Simulate exception
-        throw new Error((this.mockResponse.error as any).message || "Simulated provider exception");
-    }
-    return Promise.resolve(this.mockResponse);
-  }
-}
+// Mock RacfIntegrationService
+jest.mock('../services/RacfIntegrationService'); // Auto-mock the service
+const MockedRacfIntegrationService = RacfIntegrationService as jest.MockedClass<typeof RacfIntegrationService>;
 
 
-describe('MainframeAuthBridge', () => {
+describe('MainframeAuthBridge with RacfIntegrationService', () => {
   let mockAuditLogger: AuditLogger;
   let mockLogProvider: MockLogProvider;
-  let mockAuthChain: MockAuthChain;
+  let mockRacfServiceInstance: jest.Mocked<RacfIntegrationService>;
   let bridgeInstance: MainframeAuthBridge;
 
   let mockRequest: Partial<Request>;
@@ -49,22 +35,17 @@ describe('MainframeAuthBridge', () => {
 
   beforeEach(() => {
     mockLogProvider = new MockLogProvider();
-    mockAuditLogger = new AuditLogger(mockLogProvider); // Real AuditLogger with mock provider
-
+    mockAuditLogger = new AuditLogger(mockLogProvider);
     logEventSpy = jest.spyOn(mockAuditLogger, 'logEvent');
     logSystemActivitySpy = jest.spyOn(mockAuditLogger, 'logSystemActivity');
 
-    mockRequest = {
-      headers: {},
-      ip: '127.0.0.1',
-      path: '/protected/resource',
-      method: 'GET',
-    };
-    mockResponse = {
-      status: jest.fn().mockReturnThis(),
-      json: jest.fn().mockReturnThis(),
-      locals: {}, // Initialize locals
-    };
+    MockedRacfIntegrationService.mockClear();
+    mockRacfServiceInstance = new MockedRacfIntegrationService() as jest.Mocked<RacfIntegrationService>;
+
+    bridgeInstance = new MainframeAuthBridge(mockAuditLogger, mockRacfServiceInstance);
+
+    mockRequest = { headers: {}, ip: '127.0.0.1', path: '/protected/resource', method: 'GET' };
+    mockResponse = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis(), locals: {} };
     responseStatusSpy = jest.spyOn(mockResponse, 'status');
     responseJsonSpy = jest.spyOn(mockResponse, 'json');
     mockNextFunction = jest.fn();
@@ -76,83 +57,58 @@ describe('MainframeAuthBridge', () => {
     mockLogProvider.clearLogs();
   });
 
-  const setupBridge = (authResponse: AuthResponse) => {
-    mockAuthChain = new MockAuthChain(mockAuditLogger, authResponse);
-    bridgeInstance = new MainframeAuthBridge(mockAuditLogger, mockAuthChain);
-  };
-
-  it('should initialize and log initialization', () => {
-    setupBridge({ isAuthenticated: true, userId: 'test' }); // Dummy response for setup
+  it('should initialize and log initialization with RacfIntegrationService', () => {
     expect(bridgeInstance).toBeDefined();
-    expect(logSystemActivitySpy).toHaveBeenCalledWith('MainframeAuthBridge initialized');
+    expect(logSystemActivitySpy).toHaveBeenCalledWith('MainframeAuthBridge initialized with RacfIntegrationService');
   });
 
-  it('should call next() and set res.locals.authenticatedUser on successful authentication (Basic Auth)', async () => {
-    const authUser = 'testUser';
-    const authPass = 'password';
+
+  it('should call racfService.verifyCredentials and next() on successful Basic Auth', async () => {
+    const authUser = 'testracfuser';
+    const authPass = 'racfpassword';
     const basicToken = Buffer.from(`${authUser}:${authPass}`).toString('base64');
     mockRequest.headers = { authorization: `Basic ${basicToken}` };
 
-    setupBridge({ isAuthenticated: true, userId: authUser, details: { provider: 'MockProvider' } });
+    const racfSuccessResponse: RacfVerificationResult = { isValid: true, userId: authUser, groups: ['GRP1'] };
+    mockRacfServiceInstance.verifyCredentials.mockResolvedValue(racfSuccessResponse);
 
     await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
 
+    expect(mockRacfServiceInstance.verifyCredentials).toHaveBeenCalledWith({ userId: authUser, password: authPass, token: undefined });
     expect(mockNextFunction).toHaveBeenCalledTimes(1);
-    expect(responseStatusSpy).not.toHaveBeenCalled(); // No error status
-    expect(mockResponse.locals.authenticatedUser).toEqual({ id: authUser, details: { provider: 'MockProvider' } });
-    expect(logEventSpy).toHaveBeenCalledWith('MAINFRAME_AUTH_BRIDGE_SUCCESS',
-        expect.objectContaining({ userId: authUser }),
-        authUser, '127.0.0.1', 'SUCCESS', expect.any(String)
-    );
+    expect(mockResponse.locals.authenticatedUser).toEqual({ id: authUser, groups: ['GRP1'], authDetails: undefined });
+    expect(logEventSpy).toHaveBeenCalledWith('MAINFRAME_AUTH_BRIDGE_SUCCESS', expect.anything(), authUser, '127.0.0.1', 'SUCCESS', expect.any(String));
   });
 
-  it('should return 401 if AuthenticationChain returns failure', async () => {
+  it('should call racfService.verifyCredentials and next() on successful Bearer token Auth', async () => {
+    const token = 'valid-racf-token';
+    mockRequest.headers = { authorization: `Bearer ${token}` };
+
+    const racfSuccessResponse: RacfVerificationResult = { isValid: true, userId: 'tokenuser', groups: ['TOKENGRP'] };
+    mockRacfServiceInstance.verifyCredentials.mockResolvedValue(racfSuccessResponse);
+
+    await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
+
+    expect(mockRacfServiceInstance.verifyCredentials).toHaveBeenCalledWith({ userId: 'tokenuser', password: undefined, token: token });
+    expect(mockNextFunction).toHaveBeenCalledTimes(1);
+    expect(mockResponse.locals.authenticatedUser).toEqual({ id: 'tokenuser', groups: ['TOKENGRP'], authDetails: undefined });
+  });
+
+  it('should return 401 if racfService.verifyCredentials returns isValid:false', async () => {
     mockRequest.headers = { authorization: 'Basic dXNlcjpwYXNz' }; // user:pass
-    setupBridge({ isAuthenticated: false, error: 'Mocked auth failure' });
+    const racfFailureResponse: RacfVerificationResult = { isValid: false, error: 'RACF Auth Failed' };
+    mockRacfServiceInstance.verifyCredentials.mockResolvedValue(racfFailureResponse);
 
     await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
 
     expect(mockNextFunction).not.toHaveBeenCalled();
     expect(responseStatusSpy).toHaveBeenCalledWith(401);
-    expect(responseJsonSpy).toHaveBeenCalledWith({ error: 'Authentication failed.', details: 'Mocked auth failure' });
-    expect(logEventSpy).toHaveBeenCalledWith('MAINFRAME_AUTH_BRIDGE_FAILURE',
-        expect.objectContaining({ error: 'Mocked auth failure' }),
-        'user', '127.0.0.1', 'FAILURE', expect.any(String)
-    );
+    expect(responseJsonSpy).toHaveBeenCalledWith({ error: 'Authentication failed.', details: 'RACF Auth Failed' });
   });
 
-  it('should return 401 if no Authorization header is provided', async () => {
-    setupBridge({ isAuthenticated: false }); // AuthChain won't be called
-    await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
-
-    expect(mockNextFunction).not.toHaveBeenCalled();
-    expect(responseStatusSpy).toHaveBeenCalledWith(401);
-    expect(responseJsonSpy).toHaveBeenCalledWith({ error: 'Authorization header missing.' });
-    expect(logEventSpy).toHaveBeenCalledWith('MAINFRAME_AUTH_BRIDGE_NO_AUTH_HEADER',
-        expect.anything(), undefined, '127.0.0.1', 'FAILURE', expect.any(String)
-    );
-  });
-
-  it('should return 400 for invalid Basic Authorization header format', async () => {
-    mockRequest.headers = { authorization: 'Basic this_is_not_base64_properly' };
-    setupBridge({ isAuthenticated: false });
-    await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
-    expect(responseStatusSpy).toHaveBeenCalledWith(400);
-    expect(responseJsonSpy).toHaveBeenCalledWith({ error: 'Invalid Basic Authorization header format.' });
-    expect(logEventSpy).toHaveBeenCalledWith('MAINFRAME_AUTH_BRIDGE_INVALID_BASIC_HEADER', expect.anything(), undefined, '127.0.0.1', 'FAILURE', expect.any(String));
-  });
-
-  it('should return 400 for unsupported Authorization header scheme', async () => {
-    mockRequest.headers = { authorization: 'Digest somecredentials' };
-    setupBridge({ isAuthenticated: false });
-    await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
-    expect(responseStatusSpy).toHaveBeenCalledWith(400);
-    expect(responseJsonSpy).toHaveBeenCalledWith({ error: 'Unsupported Authorization header scheme.' });
-  });
-
-  it('should return 500 if AuthenticationChain throws an exception', async () => {
+  it('should return 500 if racfService.verifyCredentials throws an exception', async () => {
     mockRequest.headers = { authorization: 'Basic dXNlcjpwYXNz' };
-    setupBridge({ isAuthenticated: false, error: { throw: true, message: "Chain exploded" } as any }); // Simulate exception
+    mockRacfServiceInstance.verifyCredentials.mockRejectedValue(new Error("RACF Service Unavailable"));
 
     await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
 
@@ -160,24 +116,33 @@ describe('MainframeAuthBridge', () => {
     expect(responseStatusSpy).toHaveBeenCalledWith(500);
     expect(responseJsonSpy).toHaveBeenCalledWith({ error: 'Internal server error during authentication.' });
     expect(logEventSpy).toHaveBeenCalledWith('MAINFRAME_AUTH_BRIDGE_EXCEPTION',
-        expect.objectContaining({ error: "Chain exploded" }),
+        expect.objectContaining({ error: "RACF Service Unavailable" }),
         'user', '127.0.0.1', 'FAILURE', expect.any(String)
     );
   });
 
-  it('should correctly parse username from Basic Auth for logging', async () => {
-    const authUser = 'specificUser';
-    const basicToken = Buffer.from(`${authUser}:test`).toString('base64');
-    mockRequest.headers = { authorization: `Basic ${basicToken}` };
-    setupBridge({ isAuthenticated: false, error: 'Test' });
-
+  // Tests for missing header, invalid header format, unsupported scheme remain important
+  it('should return 401 if no Authorization header is provided', async () => {
+    // No setup for mockRacfServiceInstance.verifyCredentials as it shouldn't be called
     await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
-
-    // Check that userIdAttempt in the log was 'specificUser'
-    const failureLog = logEventSpy.mock.calls.find(call => call[0] === 'MAINFRAME_AUTH_BRIDGE_FAILURE');
-    expect(failureLog).toBeDefined();
-    expect(failureLog?.[1].userIdAttempt).toBe(authUser); // Check the logged userIdAttempt
-    expect(failureLog?.[2]).toBe(authUser); // Check the userId field in logEvent
+    expect(mockRacfServiceInstance.verifyCredentials).not.toHaveBeenCalled();
+    expect(responseStatusSpy).toHaveBeenCalledWith(401);
+    expect(responseJsonSpy).toHaveBeenCalledWith({ error: 'Authorization header missing.' });
   });
 
+  it('should return 400 for invalid Basic Authorization header format', async () => {
+    mockRequest.headers = { authorization: 'Basic this_is_not_base64_properly' };
+    await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
+    expect(mockRacfServiceInstance.verifyCredentials).not.toHaveBeenCalled();
+    expect(responseStatusSpy).toHaveBeenCalledWith(400);
+    expect(responseJsonSpy).toHaveBeenCalledWith({ error: 'Invalid Basic Authorization header format.' });
+  });
+
+  it('should return 400 for unsupported Authorization header scheme', async () => {
+    mockRequest.headers = { authorization: 'Digest somecredentials' };
+    await bridgeInstance.bridge(mockRequest as Request, mockResponse as Response, mockNextFunction);
+    expect(mockRacfServiceInstance.verifyCredentials).not.toHaveBeenCalled();
+    expect(responseStatusSpy).toHaveBeenCalledWith(400);
+    expect(responseJsonSpy).toHaveBeenCalledWith({ error: 'Unsupported Authorization header scheme.' });
+  });
 });

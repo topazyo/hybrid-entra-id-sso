@@ -4,7 +4,9 @@ import { AuditLogger, ConsoleLogProvider } from './services/AuditLogger';
 import { HealthController } from './controllers/HealthController';
 import { ConfigurationManager } from './services/ConfigurationManager';
 import { RateLimiter } from './services/RateLimiter';
-import { param, validationResult, matchedData } from 'express-validator'; // Import express-validator functions
+import { MainframeAuthBridge } from './middleware/MainframeAuthBridge';
+import { RacfIntegrationService } from './services/RacfIntegrationService';
+import { securityHeadersMiddleware } from './middleware/SecurityHeadersMiddleware'; // Import new middleware
 
 // Initialize services
 const auditLogger = new AuditLogger(new ConsoleLogProvider());
@@ -19,14 +21,19 @@ configManager.set('appVersion', '0.1.0-running');
 
 const healthController = new HealthController(new ConsoleLogProvider(), configManager, configManager.get('appVersion', '0.1.0-default'));
 const rateLimiter = new RateLimiter(new ConsoleLogProvider());
+const racfService = new RacfIntegrationService(new ConsoleLogProvider());
+const mainframeAuthBridge = new MainframeAuthBridge(auditLogger, racfService);
 
 
 const app: Express = express();
-// app.set('trust proxy', 1); // Uncomment if behind a reverse proxy for accurate req.ip
+// app.set('trust proxy', 1);
 const PORT: number = parseInt(configManager.get('port', configManager.get('defaultPort')) as string, 10);
 
+// --- Global Middleware ---
 app.use(express.json());
+app.use(securityHeadersMiddleware); // Add security headers middleware globally
 
+// Request logging middleware (as before)
 app.use((req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
   const correlationId = req.headers['x-correlation-id'] || `http-${Date.now()}-${Math.random().toString(36).substring(2,7)}`;
@@ -97,6 +104,7 @@ const createRateLimitMiddleware = (
 
 const healthRateLimitConfig = { maxRequests: 20, windowSeconds: 60 };
 const configRateLimitConfig = { maxRequests: 10, windowSeconds: 60 };
+const mainframeRouteRateLimitConfig = { maxRequests: 15, windowSeconds: 60 };
 
 // Routes
 app.get('/', (req: Request, res: Response) => {
@@ -123,30 +131,27 @@ app.get(
 
 const SENSITIVE_KEY_PATTERNS = [/secret/i, /password/i, /key/i, /token/i];
 const ALLOWED_CONFIG_KEYS = ['healthCheck.testKey', 'defaultPort', 'appVersion', 'appName'];
-// VALID_CONFIG_KEY_REGEX is now handled by express-validator's .matches()
 
 app.get(
   '/config/:key',
   createRateLimitMiddleware(configRateLimitConfig, '/config/:key'),
-  // --- express-validator validation chain ---
   param('key')
     .isString().withMessage('Key parameter must be a string.')
     .notEmpty().withMessage('Key parameter must not be empty.')
     .isLength({ min: 1, max: 255 }).withMessage('Key parameter must be between 1 and 255 characters.')
     .matches(/^[a-zA-Z0-9_.-]+$/).withMessage('Key parameter contains invalid characters. Allowed: a-z, A-Z, 0-9, _, ., -'),
-  // --- Handler for validation results and main logic ---
   (req: Request, res: Response) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       auditLogger.logEvent(
         'CONFIG_ACCESS_VALIDATION_ERROR',
         {
-          key_provided: req.params.key, // Log what was actually provided
+          key_provided: req.params.key,
           reason: 'express-validator validation failed',
           errors: errors.array()
         },
-        undefined, // userId
-        req.ip,    // clientIp
+        undefined,
+        req.ip,
         'FAILURE',
         req.headers['x-correlation-id'] as string | undefined
       );
@@ -157,14 +162,12 @@ app.get(
     const correlationId = req.headers['x-correlation-id'] as string | undefined;
     const clientIp = req.ip;
 
-    // Security Filter
     const isSensitive = SENSITIVE_KEY_PATTERNS.some(pattern => pattern.test(key)) && !ALLOWED_CONFIG_KEYS.includes(key);
     if (isSensitive) {
       auditLogger.logEvent('CONFIG_ACCESS_DENIED', { key, reason: 'Sensitive key access restricted' }, undefined, clientIp, 'FAILURE', correlationId);
       return res.status(403).json({ error: 'Access to this configuration key is restricted.' });
     }
 
-    // Retrieve Configuration Value
     const value = configManager.get(key);
     if (value !== undefined) {
       auditLogger.logEvent('CONFIG_ACCESS_SUCCESS', { key }, undefined, clientIp, 'SUCCESS', correlationId);
@@ -176,13 +179,39 @@ app.get(
   }
 );
 
+app.get(
+  '/api/v1/mainframe/data',
+  createRateLimitMiddleware(mainframeRouteRateLimitConfig, '/api/v1/mainframe/data'),
+  mainframeAuthBridge.bridge,
+  (req: Request, res: Response) => {
+    const authenticatedUser = res.locals.authenticatedUser as any;
+    auditLogger.logEvent(
+        'MAINFRAME_DATA_ACCESS_SUCCESS',
+        { userId: authenticatedUser?.id, path: req.path },
+        authenticatedUser?.id,
+        req.ip,
+        'SUCCESS',
+        req.headers['x-correlation-id'] as string | undefined
+    );
+    res.status(200).json({
+      message: 'Successfully accessed protected mainframe data.',
+      user: authenticatedUser,
+      data: {
+        records: ["record1_data", "record2_data"],
+        retrievedAt: new Date().toISOString()
+      }
+    });
+  }
+);
+
+
 // Start server
 app.listen(PORT, () => {
   auditLogger.logSystemActivity(`Server is running on port ${PORT}`, { port: PORT, environment: process.env.NODE_ENV || 'development' }, 'info');
   console.log(`Server listening on http://localhost:${PORT}`);
   console.log(`Health check available at http://localhost:${PORT}/health`);
   console.log(`Config access (example): http://localhost:${PORT}/config/appName`);
-  console.log(`Config access (example allowed sensitive pattern): http://localhost:${PORT}/config/healthCheck.testKey`);
+  console.log(`Mainframe data route (example): http://localhost:${PORT}/api/v1/mainframe/data`);
 });
 
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
