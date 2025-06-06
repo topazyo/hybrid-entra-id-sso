@@ -28,7 +28,6 @@
     The Azure region where resources will be deployed (e.g., 'EastUS').
 .NOTES
     Version: 0.4
-    Author: AI Assistant
 .EXAMPLE
     ./Initialize-AzureResources.ps1 -TenantId "your-tenant-id" `
         -SubscriptionId "your-subscription-id" `
