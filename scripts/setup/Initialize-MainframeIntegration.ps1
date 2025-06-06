@@ -171,5 +171,4 @@ Write-Host "  - Running specific JCL jobs for setup."
 Write-Host "  - Executing RACF commands to define users, permissions, or resources."
 Write-Host "  - Configuring specific integration software on the mainframe side."
 Write-Host "--------------------------------------------------"
-
 Write-Host "Mainframe Integration Initialization script execution completed."
