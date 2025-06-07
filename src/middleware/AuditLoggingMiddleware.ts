@@ -1,104 +1,77 @@
+// src/middleware/AuditLoggingMiddleware.ts
 import { Request, Response, NextFunction } from 'express';
-import { Logger } from '../utils/Logger';
-import { AuditLogger } from '../services/AuditLogger';
-import { GeoService } from '../services/GeoService';
+import { AuditLogger } from '../services/AuditLogger'; // Assuming AuditLogger is in services
+import { IncomingHttpHeaders } from 'http'; // For typing req.headers
 
 export class AuditLoggingMiddleware {
-  private logger: Logger;
   private auditLogger: AuditLogger;
-  private geoService: GeoService;
 
-  constructor() {
-    this.logger = new Logger('AuditLoggingMiddleware');
-    this.auditLogger = new AuditLogger(
-      process.env.LOG_ANALYTICS_WORKSPACE_ID,
-      process.env.LOG_ANALYTICS_KEY
-    );
-    this.geoService = new GeoService();
+  constructor(auditLogger: AuditLogger) {
+    this.auditLogger = auditLogger;
+    this.auditLogger.setGlobalContext('middleware', 'AuditLoggingMiddleware'); // Optional: context for logs from this middleware
+    this.auditLogger.logSystemActivity('AuditLoggingMiddleware initialized');
   }
 
-  middleware = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> => {
+  public logRequest = (req: Request, res: Response, next: NextFunction): void => {
     const startTime = Date.now();
+    // Ensure correlationId is set or generated if not present
+    let correlationId = req.headers['x-correlation-id'] as string | undefined;
+    if (!correlationId) {
+        correlationId = `http-${Date.now()}-${Math.random().toString(36).substring(2,9)}`;
+        req.headers['x-correlation-id'] = correlationId; // Make it available to subsequent handlers/loggers
+    }
+    // Also set it on res for consistency in logging, though it's mainly for tracking requests
+    res.setHeader('X-Correlation-ID', correlationId);
 
-    // Capture the original end function
-    const originalEnd = res.end;
-    const chunks: Buffer[] = [];
 
-    // Override end function to capture response
-    res.end = (...args: any[]): any => {
-      if (args[0]) {
-        chunks.push(Buffer.from(args[0]));
-      }
-      
-      this.logAuditEvent(req, res, chunks, startTime)
-        .catch(error => {
-          this.logger.error('Failed to log audit event', { error });
-        });
-
-      originalEnd.apply(res, args);
-    };
-
-    next();
-  };
-
-  private async logAuditEvent(
-    req: Request,
-    res: Response,
-    chunks: Buffer[],
-    startTime: number
-  ): Promise<void> {
-    try {
-      const geoLocation = await this.geoService.getLocation(req.ip);
-      
-      const auditEvent = {
-        timestamp: new Date(),
-        eventType: 'HttpRequest',
-        userId: req.user?.id || 'anonymous',
-        sourceIp: req.ip,
+    this.auditLogger.logSystemActivity(
+      'INCOMING_HTTP_REQUEST', // More specific event type
+      {
         method: req.method,
-        path: req.path,
-        statusCode: res.statusCode,
-        responseTime: Date.now() - startTime,
+        url: req.originalUrl,
+        ip: req.ip,
+        correlationId: correlationId,
         userAgent: req.headers['user-agent'],
-        geoLocation,
-        requestHeaders: this.sanitizeHeaders(req.headers),
-        queryParameters: req.query,
-        responseSize: Buffer.concat(chunks).length,
-        sessionId: req.session?.id,
-        correlationId: req.headers['x-correlation-id']
-      };
+        referer: req.headers['referer'],
+        // Log body presence/size instead of full body for sensitive data
+        bodySize: req.body ? JSON.stringify(req.body).length : 0,
+        // Example: Mask sensitive headers before logging
+        // headers: this.maskSensitiveHeaders(req.headers),
+      },
+      'info'
+    );
 
-      await this.auditLogger.logEvent({
-          eventType: 'HttpAudit',
-          userId: auditEvent.userId,
-          resourceId: auditEvent.path,
-          action: auditEvent.method,
-          result: res.statusCode < 400 ? 'success' : 'failure',
-          metadata: auditEvent,
-          riskScore: 0,
-          timestamp: undefined
-      });
-
-    } catch (error) {
-      this.logger.error('Audit logging failed', { error });
-      throw error;
-    }
+    res.on('finish', () => {
+      const durationMs = Date.now() - startTime;
+      this.auditLogger.logSystemActivity(
+        'HTTP_RESPONSE_SENT', // More specific event type
+        {
+          method: req.method,
+          url: req.originalUrl,
+          statusCode: res.statusCode,
+          statusMessage: res.statusMessage,
+          durationMs: durationMs,
+          correlationId: correlationId,
+          // Potentially log response size or key response headers if needed
+          // responseContentLength: res.getHeader('Content-Length'),
+        },
+        res.statusCode >= 400 ? (res.statusCode >= 500 ? 'error' : 'warn') : 'info'
+      );
+    });
+    next();
   }
 
-  private sanitizeHeaders(headers: Record<string, any>): Record<string, any> {
-    const sensitiveHeaders = ['authorization', 'cookie', 'x-api-key'];
-    const sanitized = { ...headers };
-    
-    for (const header of sensitiveHeaders) {
-      if (sanitized[header]) {
-        sanitized[header] = '[REDACTED]';
-      }
-    }
-    
-    return sanitized;
-  }
+  // Example helper for masking, not fully implemented for brevity
+  // private maskSensitiveHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
+  //   const sensitive = ['authorization', 'cookie', 'set-cookie'];
+  //   const masked: IncomingHttpHeaders = {};
+  //   for (const key in headers) {
+  //     if (sensitive.includes(key.toLowerCase())) {
+  //       masked[key] = '***MASKED***';
+  //     } else {
+  //       masked[key] = headers[key];
+  //     }
+  //   }
+  //   return masked;
+  // }
 }
