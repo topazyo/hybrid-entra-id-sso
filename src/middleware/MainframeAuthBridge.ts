@@ -2,15 +2,14 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuditLogger } from '../services/AuditLogger';
 import { AuthenticationChain, AuthRequest, AuthResponse } from '../auth/AuthenticationChain';
-// RacfIntegrationService import is no longer needed directly by the bridge itself
 
 export class MainframeAuthBridge {
   private auditLogger: AuditLogger;
-  private authChain: AuthenticationChain; // Reverted to AuthenticationChain
+  private authChain: AuthenticationChain;
 
-  constructor(auditLogger: AuditLogger, authChain: AuthenticationChain) { // Changed constructor
+  constructor(auditLogger: AuditLogger, authChain: AuthenticationChain) {
     this.auditLogger = auditLogger;
-    this.authChain = authChain; // Store AuthenticationChain
+    this.authChain = authChain;
     this.auditLogger.setGlobalContext('middleware', 'MainframeAuthBridge');
     this.auditLogger.logSystemActivity('MainframeAuthBridge initialized with AuthenticationChain');
   }
@@ -33,69 +32,75 @@ export class MainframeAuthBridge {
 
     if (authHeader) {
       if (authHeader.startsWith('Basic ')) {
-        credentialType = 'password'; // Assuming Basic Auth implies password for RACF context
+        credentialType = 'password';
         try {
           const basicAuthDecoded = Buffer.from(authHeader.substring(6), 'base64').toString();
           const parts = basicAuthDecoded.split(':');
           userIdAttempt = parts[0];
           passwordAttempt = parts.slice(1).join(':');
+          if (!userIdAttempt || passwordAttempt === undefined) { // Basic validation for decoded parts
+              throw new Error("Invalid Basic Auth structure after decoding.");
+          }
         } catch (e) {
-            this.auditLogger.logEvent('MAINFRAME_AUTH_BRIDGE_INVALID_BASIC_HEADER', { error: (e as Error).message }, undefined, clientIp, 'FAILURE', correlationId);
+            this.auditLogger.logEvent('MAINFRAME_AUTH_BRIDGE_INVALID_BASIC_HEADER', { error: (e as Error).message, authHeaderProvided: authHeader }, undefined, clientIp, 'FAILURE', correlationId);
             res.status(400).json({ error: 'Invalid Basic Authorization header format.' });
             return;
         }
       } else if (authHeader.startsWith('Bearer ')) {
         credentialType = 'token';
-        tokenAttempt = authHeader.substring(7);
-        // userIdAttempt might be derived from token by a provider, or passed in another header/claim
-        // For now, let's assume if it's a Bearer token, the userId might be part of the token itself
-        // or the provider figures it out. We'll pass what we have.
-        // For providers like RacfPasswordProvider, userId is mandatory in AuthRequest.
-        // For a token provider, it might parse the token to get the userId.
-        // Let's assume a placeholder or that specific providers handle userId extraction from token.
-        userIdAttempt = 'user_from_token'; // Placeholder, specific provider should handle if needed
+        tokenAttempt = authHeader.substring(7).trim(); // Get token and trim whitespace
+        // For Bearer tokens, userId is typically derived from the token itself by the verifying provider.
+        // So, userIdAttempt can be generic here or undefined.
+        // The BearerTokenAuthProvider will set the authoritative userId after verification.
+        userIdAttempt = 'token_holder'; // Generic placeholder, or could be undefined
+        passwordAttempt = undefined; // Ensure password is not set for token type
+        if (!tokenAttempt) {
+          this.auditLogger.logEvent('MAINFRAME_AUTH_BRIDGE_INVALID_BEARER_TOKEN', { reason: "Empty token string after 'Bearer ' prefix." }, undefined, clientIp, 'FAILURE', correlationId);
+          res.status(400).json({ error: 'Invalid Bearer token: token string is empty.' });
+          return;
+        }
       } else {
         this.auditLogger.logEvent('MAINFRAME_AUTH_BRIDGE_UNSUPPORTED_AUTH_HEADER', { headerScheme: authHeader.split(' ')[0] }, undefined, clientIp, 'FAILURE', correlationId);
         res.status(400).json({ error: 'Unsupported Authorization header scheme.' });
         return;
       }
-      this.auditLogger.logSystemActivity('Attempting authentication via MainframeAuthBridge', { userIdAttempt: userIdAttempt || 'N/A', authType: credentialType }, 'info');
+      this.auditLogger.logSystemActivity('Attempting authentication via MainframeAuthBridge', { userIdAttemptedForLog: userIdAttempt || 'N/A', authType: credentialType }, 'info');
     } else {
       this.auditLogger.logEvent('MAINFRAME_AUTH_BRIDGE_NO_AUTH_HEADER', { path: req.path }, undefined, clientIp, 'FAILURE', correlationId);
       res.status(401).json({ error: 'Authorization header missing.' });
       return;
     }
     
-    // Ensure userIdAttempt is a string for AuthRequest, even if it's a placeholder
+    // If userIdAttempt is truly optional until token verification by a token provider,
+    // this check might be too strict or needs adjustment.
+    // For password type, userId from Basic Auth is generally expected.
+    // For token type, if the token is opaque and doesn't inherently carry a pre-verifiable userId,
+    // then userIdAttempt might legitimately be a placeholder or undefined here.
+    // The current RacfPasswordProvider and BearerTokenAuthProvider both expect a userId string in AuthRequest.
     if (!userIdAttempt) {
-        // This case should ideally be caught earlier if authHeader is present but userId couldn't be derived.
-        // For Basic, userIdAttempt is always derived. For Bearer, it's 'user_from_token'.
-        // Adding a fallback, though it implies a logic flaw above if reached with an authHeader.
-        userIdAttempt = "unknown_user_auth_attempt";
+        this.auditLogger.logEvent('MAINFRAME_AUTH_BRIDGE_USERID_MISSING', { authType: credentialType, reason: "userIdAttempt resolved to undefined before AuthRequest construction." }, undefined, clientIp, 'FAILURE', correlationId);
+        res.status(400).json({ error: 'User identifier could not be determined for authentication before provider call.' });
+        return;
     }
 
-    // Construct AuthRequest with the new credentials field
     const authRequest: AuthRequest = {
-      userId: userIdAttempt,
+      userId: userIdAttempt, // userId for password, placeholder for token if not in request
       credentials: {
         type: credentialType,
-        password: passwordAttempt,
-        token: tokenAttempt,
+        password: passwordAttempt, // Will be undefined for token type
+        token: tokenAttempt,       // Will be undefined for password type
       },
       ipAddress: clientIp,
       userAgent: req.headers['user-agent'],
       correlationId: correlationId,
-      // other context...
     };
 
     try {
-      // Use AuthenticationChain now
       const authResponse: AuthResponse = await this.authChain.execute(authRequest);
 
       if (authResponse.isAuthenticated && authResponse.userId) {
         res.locals.authenticatedUser = {
             id: authResponse.userId,
-            // groups might be in authResponse.details.groups from RacfPasswordProvider
             groups: (authResponse.details as any)?.groups,
             authDetails: authResponse.details
         };
@@ -108,16 +113,16 @@ export class MainframeAuthBridge {
       } else {
         this.auditLogger.logEvent(
           'MAINFRAME_AUTH_BRIDGE_FAILURE',
-          { userIdAttempt, error: authResponse.error, details: authResponse.details },
-          userIdAttempt, clientIp, 'FAILURE', correlationId
+          { userIdAttempt: authRequest.userId, error: authResponse.error, details: authResponse.details }, // Log the userId passed to authChain
+          authRequest.userId, clientIp, 'FAILURE', correlationId
         );
         res.status(401).json({ error: 'Authentication failed.', details: authResponse.error });
       }
-    } catch (error: any) { // This catch is for exceptions from authChain.execute() itself
+    } catch (error: any) {
       this.auditLogger.logEvent(
-        'MAINFRAME_AUTH_BRIDGE_CHAIN_EXCEPTION', // Changed event name for clarity
+        'MAINFRAME_AUTH_BRIDGE_CHAIN_EXCEPTION',
         { error: error.message, stack: error.stack },
-        userIdAttempt, clientIp, 'FAILURE', correlationId
+        authRequest.userId, clientIp, 'FAILURE', correlationId // Log the userId passed to authChain
       );
       res.status(500).json({ error: 'Internal server error during authentication chain processing.' });
     }

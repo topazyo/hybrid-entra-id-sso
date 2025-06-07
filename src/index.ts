@@ -10,8 +10,9 @@ import { securityHeadersMiddleware } from './middleware/SecurityHeadersMiddlewar
 import { param, validationResult } from 'express-validator';
 import { AuthenticationChain, AuthRequest, AuthResponse } from './auth/AuthenticationChain';
 import { RacfPasswordProvider } from './auth/RacfPasswordProvider';
+import { BearerTokenAuthProvider } from './auth/BearerTokenAuthProvider'; // Import new provider
 import { AccessTokenService } from './services/AccessTokenService';
-import { AuditLoggingMiddleware } from './middleware/AuditLoggingMiddleware'; // Import new middleware
+import { AuditLoggingMiddleware } from './middleware/AuditLoggingMiddleware';
 
 // Initialize services
 const auditLogger = new AuditLogger(new ConsoleLogProvider());
@@ -28,11 +29,21 @@ const healthController = new HealthController(new ConsoleLogProvider(), configMa
 const rateLimiter = new RateLimiter(new ConsoleLogProvider());
 const racfService = new RacfIntegrationService(new ConsoleLogProvider());
 const accessTokenService = new AccessTokenService(new ConsoleLogProvider());
-const authChain = new AuthenticationChain(auditLogger);
+
+
+// --- Authentication Setup ---
+const authChain = new AuthenticationChain(auditLogger); // Pass auditLogger to AuthChain
+
 const racfPasswordProvider = new RacfPasswordProvider(racfService, new ConsoleLogProvider());
 authChain.addProvider(racfPasswordProvider);
+
+// Instantiate and add BearerTokenAuthProvider
+const bearerTokenAuthProvider = new BearerTokenAuthProvider(accessTokenService, new ConsoleLogProvider());
+authChain.addProvider(bearerTokenAuthProvider); // Add new provider to the chain
+
+// MainframeAuthBridge instantiation uses the configured authChain
 const mainframeAuthBridge = new MainframeAuthBridge(auditLogger, authChain);
-const auditLoggingMiddleware = new AuditLoggingMiddleware(auditLogger); // Instantiate new middleware
+const auditLoggingMiddleware = new AuditLoggingMiddleware(auditLogger);
 
 
 const app: Express = express();
@@ -42,7 +53,6 @@ const PORT: number = parseInt(configManager.get('port', configManager.get('defau
 // --- Global Middleware ---
 app.use(express.json());
 app.use(securityHeadersMiddleware);
-// Replace inline request logger with the new middleware instance method
 app.use(auditLoggingMiddleware.logRequest);
 
 
