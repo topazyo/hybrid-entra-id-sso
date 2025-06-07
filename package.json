@@ -1,0 +1,24 @@
+{
+  "name": "hybrid-entra-id-sso",
+  "version": "1.0.0",
+  "description": "Enterprise-grade solution for implementing and managing Hybrid Entra ID SSO in complex environments with legacy system integration.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "example": "examples",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/topazyo/hybrid-entra-id-sso.git"
+  },
+  "author": "Topaz Hurvitz",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/topazyo/hybrid-entra-id-sso/issues"
+  },
+  "homepage": "https://github.com/topazyo/hybrid-entra-id-sso#readme"
+}
