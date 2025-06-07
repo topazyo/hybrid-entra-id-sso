@@ -1,0 +1,48 @@
+# Git files
+.git
+.gitignore
+
+# Node modules (these are installed in the Docker image)
+node_modules
+
+# Build output (this is created in the Docker image)
+dist
+build
+
+# NPM debug files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# dotenv environment variable files (these should be configured in the deployment environment)
+.env*
+!.env.example
+
+# Test files (if not needed in production image, though sometimes useful for smoke tests)
+tests/
+coverage/
+jest.config.js
+*.test.ts
+*.spec.ts
+
+# TypeScript configuration files (not needed at runtime)
+tsconfig.json
+tslint.json
+
+# Docker files
+Dockerfile
+.dockerignore
+
+# IDE and OS specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+Thumbs.db
+.DS_Store
+
+# Markdown files (unless served by the app)
+*.md
+# Example: Keep specific docs if needed
+# !docs/api-spec.yaml

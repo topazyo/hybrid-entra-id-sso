@@ -7,11 +7,11 @@ import { RateLimiter } from './services/RateLimiter';
 import { MainframeAuthBridge } from './middleware/MainframeAuthBridge';
 import { RacfIntegrationService } from './services/RacfIntegrationService';
 import { securityHeadersMiddleware } from './middleware/SecurityHeadersMiddleware';
-import { param, validationResult } from 'express-validator'; // Removed matchedData as it's not used
-
-// Import AuthenticationChain and Providers
-import { AuthenticationChain } from './auth/AuthenticationChain';
+import { param, validationResult } from 'express-validator';
+import { AuthenticationChain, AuthRequest, AuthResponse } from './auth/AuthenticationChain';
 import { RacfPasswordProvider } from './auth/RacfPasswordProvider';
+import { AccessTokenService } from './services/AccessTokenService';
+import { AuditLoggingMiddleware } from './middleware/AuditLoggingMiddleware'; // Import new middleware
 
 // Initialize services
 const auditLogger = new AuditLogger(new ConsoleLogProvider());
@@ -27,15 +27,12 @@ configManager.set('appVersion', '0.1.0-running');
 const healthController = new HealthController(new ConsoleLogProvider(), configManager, configManager.get('appVersion', '0.1.0-default'));
 const rateLimiter = new RateLimiter(new ConsoleLogProvider());
 const racfService = new RacfIntegrationService(new ConsoleLogProvider());
-
-// Setup AuthenticationChain
-const authChain = new AuthenticationChain(auditLogger); // Pass auditLogger to AuthChain
+const accessTokenService = new AccessTokenService(new ConsoleLogProvider());
+const authChain = new AuthenticationChain(auditLogger);
 const racfPasswordProvider = new RacfPasswordProvider(racfService, new ConsoleLogProvider());
 authChain.addProvider(racfPasswordProvider);
-// Potentially add other providers to the chain here in the future
-
-// Instantiate MainframeAuthBridge with AuditLogger and the configured AuthenticationChain
 const mainframeAuthBridge = new MainframeAuthBridge(auditLogger, authChain);
+const auditLoggingMiddleware = new AuditLoggingMiddleware(auditLogger); // Instantiate new middleware
 
 
 const app: Express = express();
@@ -45,40 +42,9 @@ const PORT: number = parseInt(configManager.get('port', configManager.get('defau
 // --- Global Middleware ---
 app.use(express.json());
 app.use(securityHeadersMiddleware);
+// Replace inline request logger with the new middleware instance method
+app.use(auditLoggingMiddleware.logRequest);
 
-app.use((req: Request, res: Response, next: NextFunction) => {
-  const startTime = Date.now();
-  const correlationId = req.headers['x-correlation-id'] || `http-${Date.now()}-${Math.random().toString(36).substring(2,7)}`;
-  req.headers['x-correlation-id'] = correlationId as string;
-
-  auditLogger.logSystemActivity(
-    'Incoming HTTP Request',
-    {
-      method: req.method,
-      url: req.originalUrl,
-      ip: req.ip,
-      correlationId: correlationId,
-      headers: req.headers,
-    },
-    'info'
-  );
-
-  res.on('finish', () => {
-    const durationMs = Date.now() - startTime;
-    auditLogger.logSystemActivity(
-      'HTTP Request Finished',
-      {
-        method: req.method,
-        url: req.originalUrl,
-        statusCode: res.statusCode,
-        durationMs: durationMs,
-        correlationId: correlationId,
-      },
-      res.statusCode >= 400 ? 'warn' : 'info'
-    );
-  });
-  next();
-});
 
 const createRateLimitMiddleware = (
     limitConfig: { maxRequests: number, windowSeconds: number },
@@ -117,6 +83,8 @@ const createRateLimitMiddleware = (
 const healthRateLimitConfig = { maxRequests: 20, windowSeconds: 60 };
 const configRateLimitConfig = { maxRequests: 10, windowSeconds: 60 };
 const mainframeRouteRateLimitConfig = { maxRequests: 15, windowSeconds: 60 };
+const authTokenRateLimitConfig = { maxRequests: 5, windowSeconds: 60 * 5 };
+
 
 // Routes
 app.get('/', (req: Request, res: Response) => {
@@ -216,6 +184,73 @@ app.get(
   }
 );
 
+app.post(
+  '/auth/token',
+  createRateLimitMiddleware(authTokenRateLimitConfig, '/auth/token'),
+  async (req: Request, res: Response) => {
+    const { userId, password } = req.body;
+    const correlationId = req.headers['x-correlation-id'] as string | undefined;
+    const clientIp = req.ip;
+
+    auditLogger.logEvent(
+        'AUTH_TOKEN_REQUEST_RECEIVED',
+        { userIdProvided: !!userId, path: req.path },
+        userId, clientIp, 'PENDING', correlationId
+    );
+
+    if (!userId || typeof userId !== 'string' || !password || typeof password !== 'string') {
+      auditLogger.logEvent(
+          'AUTH_TOKEN_VALIDATION_FAILURE',
+          { userId, reason: 'Missing or invalid userId/password in request body' },
+          userId, clientIp, 'FAILURE', correlationId
+      );
+      return res.status(400).json({ error: 'userId and password are required in the request body and must be strings.' });
+    }
+
+    const authRequest: AuthRequest = {
+      userId,
+      credentials: {
+        type: 'password',
+        password: password,
+      },
+      ipAddress: clientIp,
+      correlationId: correlationId,
+    };
+
+    try {
+      const authResponse = await authChain.execute(authRequest);
+
+      if (authResponse.isAuthenticated && authResponse.userId) {
+        const token = await accessTokenService.generateToken(authResponse.userId, {
+            groups: (authResponse.details as any)?.groups,
+            provider: (authResponse.details as any)?.provider
+        });
+
+        auditLogger.logEvent(
+            'AUTH_TOKEN_ISSUED_SUCCESS',
+            { userId: authResponse.userId, tokenLength: token.length },
+            authResponse.userId, clientIp, 'SUCCESS', correlationId
+        );
+        return res.status(200).json({ access_token: token, token_type: 'Bearer', user: authResponse.details });
+      } else {
+        auditLogger.logEvent(
+            'AUTH_TOKEN_AUTHENTICATION_FAILURE',
+            { userId, error: authResponse.error },
+            userId, clientIp, 'FAILURE', correlationId
+        );
+        return res.status(401).json({ error: 'Authentication failed.', details: authResponse.error });
+      }
+    } catch (chainError: any) {
+      auditLogger.logEvent(
+          'AUTH_TOKEN_CHAIN_EXCEPTION',
+          { userId, error: chainError.message, stack: chainError.stack },
+          userId, clientIp, 'FAILURE', correlationId
+      );
+      return res.status(500).json({ error: 'Internal server error during token issuance.' });
+    }
+  }
+);
+
 
 // Start server
 app.listen(PORT, () => {
@@ -224,6 +259,7 @@ app.listen(PORT, () => {
   console.log(`Health check available at http://localhost:${PORT}/health`);
   console.log(`Config access (example): http://localhost:${PORT}/config/appName`);
   console.log(`Mainframe data route (example): http://localhost:${PORT}/api/v1/mainframe/data`);
+  console.log(`Token endpoint (POST): http://localhost:${PORT}/auth/token`);
 });
 
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {

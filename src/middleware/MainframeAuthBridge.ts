@@ -120,7 +120,6 @@ export class MainframeAuthBridge {
         userIdAttempt, clientIp, 'FAILURE', correlationId
       );
       res.status(500).json({ error: 'Internal server error during authentication chain processing.' });
-
     }
   };
 }
