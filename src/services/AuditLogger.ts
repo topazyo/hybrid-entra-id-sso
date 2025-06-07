@@ -55,6 +55,7 @@ export class AuditLogger {
   public clearGlobalContext(key: string): void {
     delete this.globalContext[key];
   }
+}
 
   public getGlobalContext(): Record<string, any> {
     return { ...this.globalContext }; // Return a copy

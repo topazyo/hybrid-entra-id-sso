@@ -109,7 +109,7 @@ describe('GET /api/v1/mainframe/data Integration Tests', () => {
   it('should be rate-limited for /api/v1/mainframe/data', async () => {
     const endpoint = '/api/v1/mainframe/data';
     // Use the validUserToken obtained in beforeAll for rate limit testing
-    const maxRequests = 15;
+    const maxRequests = 15;uests = 15; // Must match mainframeRouteRateLimitConfig in index.ts
 
     const promises = [];
     for (let i = 0; i < maxRequests; i++) {
