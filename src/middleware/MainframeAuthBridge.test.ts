@@ -104,7 +104,7 @@ describe('MainframeAuthBridge with AuthenticationChain', () => {
 
     expect(mockAuthChain.execute).toHaveBeenCalledTimes(1);
     expect(mockNextFunction).toHaveBeenCalledTimes(1);
-    expect(mockResponse.locals.authenticatedUser).toEqual({ id: authUser, groups: ['GRP1'], authDetails: { provider: 'RacfPasswordProvider', groups: ['GRP1'] } });
+    expect((mockResponse.locals as any).authenticatedUser).toEqual({ id: authUser, groups: ['GRP1'], authDetails: { provider: 'RacfPasswordProvider', groups: ['GRP1'] } });
   });
 
   it('should call authChain.execute with correct Bearer token credentials', async () => {
@@ -123,7 +123,7 @@ describe('MainframeAuthBridge with AuthenticationChain', () => {
 
     expect(mockAuthChain.execute).toHaveBeenCalledTimes(1);
     expect(mockNextFunction).toHaveBeenCalledTimes(1);
-    expect(mockResponse.locals.authenticatedUser).toEqual({ id: 'actualTokenUser', groups: undefined, authDetails: { provider: 'BearerTokenAuthProvider', scope: 'read' } });
+    expect((mockResponse.locals as any).authenticatedUser).toEqual({ id: 'actualTokenUser', groups: undefined, authDetails: { provider: 'BearerTokenAuthProvider', scope: 'read' } });
   });
 
   it('should return 400 if Basic Auth decoding results in no username', async () => {

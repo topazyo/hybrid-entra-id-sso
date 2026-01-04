@@ -1,16 +1,22 @@
-import { expect } from 'chai';
-import { SecurityOrchestrator } from '../../../src/services/SecurityOrchestrator';
-import { MockLogger } from '../../mocks/MockLogger';
-import { MockEventBus } from '../../mocks/MockEventBus';
+import { SecurityOrchestrator } from '../../src/services/SecurityOrchestrator';
+import { EventBus } from '../../utils/EventBus';
+
+class TestLogger {
+    public logs: any[] = [];
+    public errors: any[] = [];
+    async info(message: string, meta?: any) { this.logs.push({ level: 'info', message, meta }); }
+    async warn(message: string, meta?: any) { this.logs.push({ level: 'warn', message, meta }); }
+    async error(message: string, meta?: any) { this.errors.push({ level: 'error', message, meta }); }
+}
 
 describe('SecurityOrchestrator', () => {
     let orchestrator: SecurityOrchestrator;
-    let mockLogger: MockLogger;
-    let mockEventBus: MockEventBus;
+    let mockLogger: TestLogger;
+    let mockEventBus: EventBus;
 
     beforeEach(() => {
-        mockLogger = new MockLogger();
-        mockEventBus = new MockEventBus();
+        mockLogger = new TestLogger();
+        mockEventBus = new EventBus();
         orchestrator = new SecurityOrchestrator(mockLogger, mockEventBus);
     });
 
@@ -25,10 +31,10 @@ describe('SecurityOrchestrator', () => {
             };
 
             const result = await orchestrator.orchestrateResponse(incident);
-            
-            expect(result).to.have.property('status');
-            expect(result.status).to.equal('completed');
-            expect(mockLogger.logs).to.have.lengthOf.at.least(1);
+
+            expect(result).toHaveProperty('status');
+            expect(result.status).toBe('completed');
+            expect(mockLogger.logs.length).toBeGreaterThanOrEqual(1);
         });
 
         it('should handle errors gracefully', async () => {
@@ -40,13 +46,8 @@ describe('SecurityOrchestrator', () => {
                 source: 'test'
             };
 
-            try {
-                await orchestrator.orchestrateResponse(badIncident);
-                expect.fail('Should have thrown an error');
-            } catch (error) {
-                expect(error).to.be.instanceof(Error);
-                expect(mockLogger.errors).to.have.lengthOf.at.least(1);
-            }
+            await expect(orchestrator.orchestrateResponse(badIncident)).rejects.toBeInstanceOf(Error);
+            expect(mockLogger.errors.length).toBeGreaterThanOrEqual(1);
         });
     });
 });

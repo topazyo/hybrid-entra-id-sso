@@ -1,28 +1,28 @@
 # Hybrid Entra ID SSO Integration Suite
 
-Enterprise-grade solution for implementing and managing Hybrid Entra ID SSO in complex environments with legacy system integration.
+Enterprise-grade solution for implementing and managing Hybrid Entra ID SSO in complex environments with legacy system integration. Bridges Azure Entra ID with mainframe auth via Express/TypeScript runtime.
 
 ## Features
 
-- Custom Identity Synchronization Monitor
-- Mainframe Integration Layer
-- Risk-Based Access Policy Engine
-- Real-time Monitoring and Alerting
-- Compliance Reporting
+- **HTTP API Surface**: Routes for health checks (`/health`), config access (`/config/:key`), mainframe data (`/api/v1/mainframe/data`), and token auth (`/auth/token`).
+- **Authentication Chain**: Modular providers including RACF password auth ([`RacfPasswordProvider`](src/auth/RacfPasswordProvider.ts)) and bearer token auth ([`BearerTokenAuthProvider`](src/auth/BearerTokenAuthProvider.ts)).
+- **Security Controls**: Rate limiting ([`RateLimiter`](src/services/RateLimiter.ts)), audit logging ([`AuditLogger`](src/services/AuditLogger.ts)), and security headers middleware ([`securityHeadersMiddleware`](src/middleware/SecurityHeadersMiddleware.ts)).
+- **Monitoring & Alerting**: Real-time monitoring pipeline ([`MonitoringPipeline`](src/monitoring/MonitoringPipeline.ts)), identity sync monitor ([`IdentitySyncMonitor`](src/monitoring/IdentitySyncMonitor.ts)), and Azure Monitor integration ([`AzureMonitorIntegration`](src/integrations/AzureMonitorIntegration.ts)).
+- **Compliance Reporting**: Automated reports via PowerShell scripts ([`Generate-ComplianceReport.ps1`](scripts/compliance/Generate-ComplianceReport.ps1)) and TypeScript services ([`ComplianceMonitor`](src/services/ComplianceMonitor.ts)).
 
 ## Prerequisites
 
-- Azure AD Connect
-- Node.js 16+
-- PowerShell 7+
-- Azure Subscription
-- Mainframe access (for legacy integration)
+- Node.js 16+ and npm (verified from package.json)
+- PowerShell 7+ (verified from scripts/setup/*.ps1)
+- Azure Subscription with Global Administrator access (verified from scripts/setup/Initialize-AzureResources.ps1)
+- Access to mainframe system for RACF integration (verified from scripts/setup/Initialize-MainframeIntegration.ps1)
 
 ## Quick Start
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/your-org/hybrid-entra-id-sso.git
+git clone https://github.com/topazyo/hybrid-entra-id-sso.git
+cd hybrid-entra-id-sso
 ```
 
 2. Install dependencies:
@@ -32,93 +32,72 @@ npm install
 
 3. Configure environment:
 ```bash
-cp .env.example .env
+cp [`.env.example`](.env.example ) .env
 # Edit .env with your settings
 ```
 
-4. Run setup script:
+4. Build and run:
 ```bash
-./scripts/setup/initialize.ps1
+npm run build
+npm start
 ```
 
-## Documentation
+5. Run setup scripts (optional, for full deployment):
+```powershell
+[`scripts/setup/initialize.ps1`](scripts/setup/initialize.ps1 ) -TenantId "your-tenant-id" -SubscriptionId "your-subscription-id" -ResourceGroup "your-resource-group"
+```
 
-- [Architecture Overview](docs/architecture/README.md)
-- [Setup Guide](docs/setup/README.md)
-- [Monitoring Guide](docs/monitoring/README.md)
+## Configuration
 
-## Security
+Environment variables from `.env.example`. Load via [`ConfigurationManager`](src/services/ConfigurationManager.ts) with `APP_` prefix. Sensitive keys (matching patterns like /secret/i) are not exposed via `/config/:key`.
 
-This project implements enterprise security best practices including:
+| Variable | Required | Default | Description | Where Used |
+|----------|----------|---------|-------------|------------|
+| AZURE_TENANT_ID | Yes | - | Azure Tenant ID | scripts/setup/*.ps1, src/integrations/AzureMonitorIntegration.ts |
+| AZURE_CLIENT_ID | Yes | - | Azure Client ID | scripts/setup/*.ps1 |
+| AZURE_CLIENT_SECRET | Yes | - | Azure Client Secret | scripts/setup/*.ps1 |
+| LOG_ANALYTICS_WORKSPACE_ID | Yes | - | Log Analytics Workspace ID | src/services/AuditLogger.ts, scripts/monitoring/Monitor-EntraIDHealth.ps1 |
+| LOG_ANALYTICS_KEY | Yes | - | Log Analytics Key | src/services/AuditLogger.ts, scripts/monitoring/Monitor-EntraIDHealth.ps1 |
+| MAINFRAME_HOST | Yes (for mainframe integration) | - | Mainframe hostname/IP | scripts/setup/Initialize-MainframeIntegration.ps1, src/services/RacfIntegrationService.ts |
+| MAINFRAME_PORT | Yes (for mainframe integration) | - | Mainframe port | scripts/setup/Initialize-MainframeIntegration.ps1 |
+| TOKEN_LIFETIME_MINUTES | No | 60 | Access token lifetime | src/services/AccessTokenService.ts |
+| MFA_ENABLED | No | true | Enable MFA | src/services/AdaptiveMFAService.ts |
+| ENCRYPTION_ALGORITHM | No | AES-256-GCM | Encryption algorithm | src/types/config.ts |
 
-- Secure credential handling
-- Audit logging
-- Compliance monitoring
-- Risk-based authentication
+## Usage
+
+- **Development server**: `npm start` (ts-node src/index.ts)
+- **Build**: `npm run build` (tsc to dist/)
+- **Production**: `npm run start:prod` (node dist/index.js after build)
+- **Tests**: `npm test` (Jest)
+- **Setup Azure resources**: `./scripts/setup/Initialize-AzureResources.ps1 -TenantId "id" -SubscriptionId "id" -ResourceGroupName "rg"`
+- **Setup monitoring**: `./scripts/setup/Initialize-Monitoring.ps1 -WorkspaceName "ws" -ResourceGroupName "rg"`
+- **Health check**: Hit `/health` endpoint
+- **Compliance report**: `./scripts/compliance/Generate-ComplianceReport.ps1`
+
+## Project Structure
+
+- **`/config`**: Infrastructure templates (Bicep for Azure, Kubernetes manifests).
+- **`/docs`**: Documentation (architecture, setup, monitoring).
+- **`/examples`**: Sample scripts (PowerShell, TypeScript).
+- **`/scripts`**: Automation (setup, monitoring, compliance, security, sync).
+- **`/src`**: Core TypeScript code (auth, controllers, integrations, middleware, monitoring, security, services).
+- **`/tests`**: Jest tests.
+- **`/utils`**: Helpers.
+- **Root files**: package.json, tsconfig.json, jest.config.js, Dockerfile, .env.example.
+
+## CI/CD
+
+GitHub Actions workflow ([`.github/workflows/security-pipeline.yml`](.github/workflows/security-pipeline.yml)) handles build, test, lint, security scans (Snyk, Trivy), and deployment to AKS on main branch pushes.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## Security
+
+See security best practices in [docs/architecture/security-components.md](docs/architecture/security-components.md).
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
-
-## Project Structure
-
-The repository is organized into the following main directories:
-
-*   **`/config`**: Contains configuration files, including infrastructure-as-code templates (e.g., Bicep for Azure) and Kubernetes manifests.
-    *   `/config/infrastructure`: Azure resource definitions.
-    *   `/config/kubernetes`: Kubernetes deployment configurations.
-*   **`/docs`**: Houses all project documentation.
-    *   `/docs/architecture`: Detailed architecture diagrams and explanations.
-    *   `/docs/monitoring`: Guides on monitoring the system.
-    *   `/docs/setup`: Installation and setup instructions.
-*   **`/examples`**: Contains example scripts and code snippets for using or integrating with the suite.
-    *   `/examples/powershell`: PowerShell examples.
-    *   `/examples/typescript`: TypeScript examples.
-*   **`/scripts`**: Includes automation scripts for various tasks like setup, compliance, monitoring, and security.
-    *   `/scripts/compliance`: Compliance report generation.
-    *   `/scripts/database`: Database schema management (if applicable).
-    *   `/scripts/monitoring`: Scripts for health checks and monitoring tasks.
-    *   `/scripts/security`: Security assessment and certificate management.
-    *   `/scripts/setup`: System initialization and setup scripts.
-    *   `/scripts/sync`: Identity synchronization scripts.
-*   **`/src`**: Contains the core source code for the application, written primarily in TypeScript.
-    *   `/src/auth`: Authentication-related components, including providers and chains.
-    *   `/src/controllers`: API controllers for handling incoming requests.
-    *   `/src/integrations`: Modules for integrating with external systems (Azure Monitor, Mainframe).
-    *   `/src/middleware`: Custom middleware for request processing (auditing, auth bridging, rate limiting).
-    *   `/src/monitoring`: Components for system monitoring and health checks.
-    *   `/src/processors`: Event processors and data handling logic.
-    *   `/src/security`: Security-specific logic, including policy enforcement and risk engines.
-    *   `/src/services`: Core business logic and services (alerting, caching, threat detection, etc.).
-    *   `/src/types`: TypeScript type definitions and interfaces.
-*   **`/tests`**: Contains all test files.
-    *   `/tests/services`: Service-level tests.
-    *   `/tests/unit`: Unit tests for individual modules and functions.
-*   **`/utils`**: Utility functions and helper modules.
-
-## Key Technologies Used
-
-This project leverages a combination of modern and enterprise technologies to achieve its goals:
-
-*   **Node.js & TypeScript**: The primary backend technology for building robust and scalable services.
-*   **PowerShell**: Used for automation scripting, especially for Azure and Windows-based environments.
-*   **Microsoft Entra ID (Azure AD)**: The core cloud identity provider.
-*   **Azure Cloud Services**:
-    *   **Azure Monitor (Log Analytics, Application Insights)**: For comprehensive monitoring, logging, and alerting.
-    *   **Azure Key Vault**: For secure management of secrets and cryptographic keys.
-    *   **Azure Functions / App Service**: Potential hosting environments for backend services.
-    *   **Azure Storage**: For storing logs, artifacts, or other data.
-*   **Mainframe Technologies (e.g., RACF)**: The legacy systems with which this suite integrates.
-*   **Authentication Protocols**: SAML, OAuth 2.0, OpenID Connect for modern authentication. TN3270 or similar for mainframe interactions.
-*   **Infrastructure-as-Code**: Bicep (`/config/infrastructure`) for defining Azure resources declaratively.
-*   **Containerization (Optional but common)**: Docker and Kubernetes (`/config/kubernetes`) for deployment and orchestration, though not explicitly detailed in all scripts yet.
-*   **Security Best Practices**:
-    *   Risk-Based Authentication.
-    *   Adaptive Multi-Factor Authentication (MFA).
-    *   Audit Logging.
-    *   Secure Credential Management.
-    *   Compliance Monitoring.

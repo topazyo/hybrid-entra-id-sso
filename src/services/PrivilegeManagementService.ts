@@ -1,6 +1,7 @@
 import { Logger } from '../utils/Logger';
 import { AuditLogger } from './AuditLogger';
 import { CacheManager } from './CacheManager';
+import { generateId } from '../utils/IdGenerator';
 
 interface PrivilegeSet {
   id: string;
@@ -70,7 +71,7 @@ export class PrivilegeManagementService {
   ): Promise<PrivilegeRequest> {
     try {
       const request = {
-        id: crypto.randomUUID(),
+        id: generateId('privilege'),
         userId,
         privileges,
         justification,

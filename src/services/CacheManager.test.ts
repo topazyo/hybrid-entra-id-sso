@@ -37,7 +37,7 @@ describe('CacheManager', () => {
 
   it('should initialize and log initialization', () => {
     expect(cacheManager).toBeDefined();
-    expect(logSystemActivitySpy).toHaveBeenCalledWith('CacheManager initialized', { defaultTTLSeconds: 60 });
+    expect(logSystemActivitySpy).toHaveBeenCalledWith('CacheManager initialized', { defaultTTLSeconds: 60, maxSize: 1000 });
   });
 
   describe('set/get', () => {

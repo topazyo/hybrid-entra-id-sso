@@ -1,7 +1,10 @@
 // tests/integration/mainframe.test.ts
-import request from 'supertest';
+import request, { Response as SupertestResponse } from 'supertest';
 import app from '../../src/index'; // Import the Express app
 import { AccessTokenService } from '../../src/services/AccessTokenService'; // For test token structure understanding
+
+const getMainframe = (bucket = 'mainframe-default') =>
+  request(app).get('/api/v1/mainframe/data').set('x-rate-limit-id', bucket);
 
 describe('GET /api/v1/mainframe/data Integration Tests', () => {
   let validUserToken: string; // To store a token for 'testracfuser'
@@ -10,6 +13,7 @@ describe('GET /api/v1/mainframe/data Integration Tests', () => {
     // Authenticate 'testracfuser' via /auth/token to get a valid Bearer token for other tests
     const response = await request(app)
       .post('/auth/token')
+      .set('x-rate-limit-id', 'mainframe-setup')
       .send({ userId: 'testracfuser', password: 'racfpassword' });
     if (response.status !== 200 || !response.body.access_token) {
       throw new Error('Failed to obtain a valid token for test setup in beforeAll. Check /auth/token endpoint and RacfPasswordProvider mock.');
@@ -18,15 +22,14 @@ describe('GET /api/v1/mainframe/data Integration Tests', () => {
   });
 
   it('should return 401 Unauthorized if no Authorization header is provided', async () => {
-    const response = await request(app).get('/api/v1/mainframe/data');
+    const response = await getMainframe('mainframe-no-auth');
     expect(response.status).toBe(401);
     expect(response.body.error).toBe('Authorization header missing.');
   });
 
   it('should return 401 Unauthorized for invalid Basic Auth credentials (mocked RACF failure)', async () => {
     const basicToken = Buffer.from('wronguser:wrongpass').toString('base64');
-    const response = await request(app)
-      .get('/api/v1/mainframe/data')
+    const response = await getMainframe('mainframe-basic-fail')
       .set('Authorization', `Basic ${basicToken}`);
 
     expect(response.status).toBe(401);
@@ -39,8 +42,7 @@ describe('GET /api/v1/mainframe/data Integration Tests', () => {
     const authPass = 'racfpassword';
     const basicToken = Buffer.from(`${authUser}:${authPass}`).toString('base64');
 
-    const response = await request(app)
-      .get('/api/v1/mainframe/data')
+    const response = await getMainframe('mainframe-basic-success')
       .set('Authorization', `Basic ${basicToken}`);
 
     expect(response.status).toBe(200);
@@ -54,8 +56,7 @@ describe('GET /api/v1/mainframe/data Integration Tests', () => {
   });
 
   it('should return 200 OK and data for a valid Bearer token obtained via /auth/token', async () => {
-    const response = await request(app)
-      .get('/api/v1/mainframe/data')
+    const response = await getMainframe('mainframe-bearer-valid')
       .set('Authorization', `Bearer ${validUserToken}`);
 
     expect(response.status).toBe(200);
@@ -71,8 +72,7 @@ describe('GET /api/v1/mainframe/data Integration Tests', () => {
   it('should return 401 Unauthorized for an invalid/malformed Bearer token', async () => {
     const token = 'invalid-jwt-token';
 
-    const response = await request(app)
-      .get('/api/v1/mainframe/data')
+    const response = await getMainframe('mainframe-bearer-invalid')
       .set('Authorization', `Bearer ${token}`);
 
     expect(response.status).toBe(401);
@@ -96,8 +96,7 @@ describe('GET /api/v1/mainframe/data Integration Tests', () => {
     const ats = new AccessTokenService(undefined, -1); // Negative TTL = already expired
     const expiredToken = await ats.generateToken('expiredUser');
 
-    const response = await request(app)
-      .get('/api/v1/mainframe/data')
+    const response = await getMainframe('mainframe-bearer-expired')
       .set('Authorization', `Bearer ${expiredToken}`);
 
     expect(response.status).toBe(401);
@@ -109,12 +108,12 @@ describe('GET /api/v1/mainframe/data Integration Tests', () => {
   it('should be rate-limited for /api/v1/mainframe/data', async () => {
     const endpoint = '/api/v1/mainframe/data';
     // Use the validUserToken obtained in beforeAll for rate limit testing
-    const maxRequests = 15;uests = 15; // Must match mainframeRouteRateLimitConfig in index.ts
+    const maxRequests = 15; // Must match mainframeRouteRateLimitConfig in index.ts
 
-    const promises = [];
+    const promises: Array<Promise<SupertestResponse>> = [];
     for (let i = 0; i < maxRequests; i++) {
       promises.push(
-        request(app).get(endpoint).set('Authorization', `Bearer ${validUserToken}`)
+        getMainframe('mainframe-rate-limit').set('Authorization', `Bearer ${validUserToken}`)
       );
     }
     const responses = await Promise.all(promises);
@@ -122,7 +121,7 @@ describe('GET /api/v1/mainframe/data Integration Tests', () => {
       expect(res.status).toBe(200);
     });
 
-    const limitedResponse = await request(app).get(endpoint).set('Authorization', `Bearer ${validUserToken}`);
+    const limitedResponse = await getMainframe('mainframe-rate-limit').set('Authorization', `Bearer ${validUserToken}`);
     expect(limitedResponse.status).toBe(429);
     expect(limitedResponse.body.error).toBe('Too Many Requests. Please try again later.');
   });

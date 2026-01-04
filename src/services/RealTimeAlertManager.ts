@@ -1,6 +1,6 @@
-import { Logger } from '../utils/Logger';
+import { Logger } from '../../utils/Logger';
 import { MetricsCollector } from './MetricsCollector';
-import { EventBus } from '../utils/EventBus';
+import { EventBus } from '../../utils/EventBus';
 
 interface AlertRule {
   id: string;
@@ -18,6 +18,30 @@ interface AlertCondition {
   value: number;
 }
 
+type AlertAction = 'notify_security_team' | 'block_source_ip' | 'trigger_backup_sync';
+
+interface AlertResolution {
+  summary: string;
+  actionTaken?: string;
+  resolvedBy?: string;
+}
+
+interface Alert {
+  id: string;
+  ruleId: string;
+  severity: AlertRule['severity'];
+  metric: string;
+  value: number;
+  timestamp: Date;
+  status: 'active' | 'resolved';
+  metadata?: Record<string, any>;
+  resolvedAt?: Date;
+  resolution?: AlertResolution;
+}
+
+/**
+ * Real-time alert evaluation and dispatch for metrics.
+ */
 export class RealTimeAlertManager {
   private logger: Logger;
   private metrics: MetricsCollector;
@@ -25,10 +49,14 @@ export class RealTimeAlertManager {
   private alertRules: Map<string, AlertRule>;
   private activeAlerts: Map<string, Alert>;
 
-  constructor() {
-    this.logger = new Logger('RealTimeAlertManager');
-    this.metrics = new MetricsCollector();
-    this.eventBus = new EventBus();
+  constructor(
+    logger: Logger = new Logger('RealTimeAlertManager'),
+    metrics: MetricsCollector = new MetricsCollector(),
+    eventBus: EventBus = new EventBus()
+  ) {
+    this.logger = logger;
+    this.metrics = metrics;
+    this.eventBus = eventBus;
     this.alertRules = new Map();
     this.activeAlerts = new Map();
     this.initializeAlertRules();
@@ -39,13 +67,9 @@ export class RealTimeAlertManager {
       id: 'ALERT_001',
       name: 'Failed Authentication Spike',
       severity: 'high',
-      conditions: [{
-        metric: 'auth.failures',
-        operator: 'gt',
-        value: 5
-      }],
+      conditions: [{ metric: 'auth.failures', operator: 'gt', value: 5 }],
       threshold: 5,
-      timeWindow: 300000, // 5 minutes
+      timeWindow: 300000,
       actions: ['notify_security_team', 'block_source_ip']
     });
 
@@ -53,26 +77,22 @@ export class RealTimeAlertManager {
       id: 'ALERT_002',
       name: 'Identity Sync Failure',
       severity: 'critical',
-      conditions: [{
-        metric: 'sync.failures',
-        operator: 'gt',
-        value: 0
-      }],
+      conditions: [{ metric: 'sync.failures', operator: 'gt', value: 0 }],
       threshold: 1,
-      timeWindow: 600000, // 10 minutes
-      actions: ['notify_admin', 'trigger_backup_sync']
+      timeWindow: 600000,
+      actions: ['notify_security_team', 'trigger_backup_sync']
     });
   }
 
-  async processMetricUpdate(metric: string, value: number): Promise<void> {
+  /** Evaluate incoming metric updates against alert rules. */
+  async processMetricUpdate(metric: string, value: number, metadata?: Record<string, any>): Promise<void> {
     try {
       const applicableRules = this.findApplicableRules(metric);
-      
+
       for (const rule of applicableRules) {
-        const isTriggered = await this.evaluateRule(rule, metric, value);
-        
+        const isTriggered = await this.evaluateRule(rule, metric, value, metadata);
         if (isTriggered) {
-          await this.triggerAlert(rule, metric, value);
+          await this.triggerAlert(rule, metric, value, metadata);
         }
       }
     } catch (error) {
@@ -82,14 +102,16 @@ export class RealTimeAlertManager {
   }
 
   private findApplicableRules(metric: string): AlertRule[] {
-    return Array.from(this.alertRules.values())
-      .filter(rule => rule.conditions.some(c => c.metric === metric));
+    return Array.from(this.alertRules.values()).filter(rule =>
+      rule.conditions.some(c => c.metric === metric)
+    );
   }
 
   private async evaluateRule(
     rule: AlertRule,
     metric: string,
-    value: number
+    value: number,
+    metadata?: Record<string, any>
   ): Promise<boolean> {
     try {
       const condition = rule.conditions.find(c => c.metric === metric);
@@ -97,7 +119,7 @@ export class RealTimeAlertManager {
 
       const historicalData = await this.getHistoricalData(metric, rule.timeWindow);
       const isThresholdExceeded = this.checkThreshold(value, condition);
-      const isAnomalous = this.detectAnomaly(value, historicalData);
+      const isAnomalous = this.detectAnomaly(value, historicalData, metadata);
 
       return isThresholdExceeded && isAnomalous;
     } catch (error) {
@@ -109,10 +131,11 @@ export class RealTimeAlertManager {
   private async triggerAlert(
     rule: AlertRule,
     metric: string,
-    value: number
+    value: number,
+    metadata?: Record<string, any>
   ): Promise<void> {
     const alertId = `${rule.id}_${Date.now()}`;
-    
+
     const alert: Alert = {
       id: alertId,
       ruleId: rule.id,
@@ -120,7 +143,8 @@ export class RealTimeAlertManager {
       metric,
       value,
       timestamp: new Date(),
-      status: 'active'
+      status: 'active',
+      metadata,
     };
 
     this.activeAlerts.set(alertId, alert);
@@ -140,7 +164,11 @@ export class RealTimeAlertManager {
     }
   }
 
-  private async executeAction(action: string, alert: Alert): Promise<void> {
+  private async notifyAlertSubscribers(alert: Alert): Promise<void> {
+    await this.eventBus.publish('alert.new', alert);
+  }
+
+  private async executeAction(action: AlertAction, alert: Alert): Promise<void> {
     switch (action) {
       case 'notify_security_team':
         await this.notifySecurityTeam(alert);
@@ -175,6 +203,14 @@ export class RealTimeAlertManager {
     }
   }
 
+  private async triggerBackupSync(alert: Alert): Promise<void> {
+    await this.eventBus.publish('sync.backup', {
+      reason: `Alert ${alert.id}`,
+      timestamp: new Date(),
+      alert,
+    });
+  }
+
   private async logAlert(alert: Alert): Promise<void> {
     await this.metrics.recordMetric('alerts.triggered', 1, {
       severity: alert.severity,
@@ -195,4 +231,40 @@ export class RealTimeAlertManager {
     alert.resolvedAt = new Date();
 
     await this.logAlertResolution(alert);
-    this.activeAlerts.delete(aler
+    await this.eventBus.publish('alert.resolved', alert);
+    this.activeAlerts.delete(alertId);
+  }
+
+  private async logAlertResolution(alert: Alert): Promise<void> {
+    await this.metrics.recordMetric('alerts.resolved', 1, {
+      severity: alert.severity,
+      ruleId: alert.ruleId
+    });
+    this.logger.info('Alert resolved', { alert });
+  }
+
+  private async getHistoricalData(_metric: string, _windowMs: number): Promise<number[]> {
+    return [];
+  }
+
+  private detectAnomaly(value: number, historical: number[], _metadata?: Record<string, any>): boolean {
+    if (historical.length === 0) return true;
+    const avg = historical.reduce((sum, v) => sum + v, 0) / historical.length;
+    return value > avg;
+  }
+
+  private checkThreshold(value: number, condition: AlertCondition): boolean {
+    switch (condition.operator) {
+      case 'gt':
+        return value > condition.value;
+      case 'lt':
+        return value < condition.value;
+      case 'eq':
+        return value === condition.value;
+      case 'neq':
+        return value !== condition.value;
+      default:
+        return false;
+    }
+  }
+}

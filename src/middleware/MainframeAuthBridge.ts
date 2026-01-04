@@ -36,10 +36,11 @@ export class MainframeAuthBridge {
         try {
           const basicAuthDecoded = Buffer.from(authHeader.substring(6), 'base64').toString();
           const parts = basicAuthDecoded.split(':');
+          const hasDelimiter = parts.length >= 2;
           userIdAttempt = parts[0];
           passwordAttempt = parts.slice(1).join(':');
-          if (!userIdAttempt || passwordAttempt === undefined) { // Basic validation for decoded parts
-              throw new Error("Invalid Basic Auth structure after decoding.");
+          if (!hasDelimiter || !userIdAttempt || !passwordAttempt) {
+            throw new Error("Invalid Basic Auth structure after decoding: missing username or password.");
           }
         } catch (e) {
             this.auditLogger.logEvent('MAINFRAME_AUTH_BRIDGE_INVALID_BASIC_HEADER', { error: (e as Error).message, authHeaderProvided: authHeader }, undefined, clientIp, 'FAILURE', correlationId);
@@ -111,12 +112,13 @@ export class MainframeAuthBridge {
         );
         next();
       } else {
+        const failureDetails = authResponse.error ?? { code: 'AUTH_FAILED_RACF', message: 'Authentication failed.' };
         this.auditLogger.logEvent(
           'MAINFRAME_AUTH_BRIDGE_FAILURE',
-          { userIdAttempt: authRequest.userId, error: authResponse.error, details: authResponse.details }, // Log the userId passed to authChain
+          { userIdAttempt: authRequest.userId, error: failureDetails, details: authResponse.details }, // Log the userId passed to authChain
           authRequest.userId, clientIp, 'FAILURE', correlationId
         );
-        res.status(401).json({ error: 'Authentication failed.', details: authResponse.error });
+        res.status(401).json({ error: 'Authentication failed.', details: failureDetails });
       }
     } catch (error: any) {
       this.auditLogger.logEvent(

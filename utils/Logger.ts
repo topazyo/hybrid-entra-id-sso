@@ -1,22 +1,19 @@
 import * as winston from 'winston';
-import { LogAnalyticsClient } from '@azure/monitor-ingestion';
 
 interface LogContext {
-  component: string;
+  component?: string;
   correlationId?: string;
   userId?: string;
   [key: string]: any;
 }
 
 export class Logger {
-  private logger: winston.Logger;
-  private logAnalyticsClient?: LogAnalyticsClient;
+  private logger!: winston.Logger;
   private component: string;
 
   constructor(component: string) {
     this.component = component;
     this.initializeLogger();
-    this.initializeLogAnalytics();
   }
 
   private initializeLogger(): void {
@@ -48,15 +45,6 @@ export class Logger {
     });
   }
 
-  private initializeLogAnalytics(): void {
-    if (process.env.LOG_ANALYTICS_WORKSPACE_ID && process.env.LOG_ANALYTICS_KEY) {
-      this.logAnalyticsClient = new LogAnalyticsClient(
-        process.env.LOG_ANALYTICS_WORKSPACE_ID,
-        process.env.LOG_ANALYTICS_KEY
-      );
-    }
-  }
-
   async info(message: string, context?: LogContext): Promise<void> {
     await this.log('info', message, context);
   }
@@ -79,20 +67,7 @@ export class Logger {
     context?: LogContext
   ): Promise<void> {
     const enrichedContext = this.enrichContext(context);
-    const logEntry = {
-      level,
-      message,
-      timestamp: new Date().toISOString(),
-      ...enrichedContext
-    };
-
-    // Log to Winston
     this.logger.log(level, message, enrichedContext);
-
-    // Log to Azure Log Analytics if configured
-    if (this.logAnalyticsClient && level !== 'debug') {
-      await this.sendToLogAnalytics(level, logEntry);
-    }
   }
 
   private enrichContext(context?: LogContext): LogContext {
@@ -100,35 +75,8 @@ export class Logger {
       component: this.component,
       environment: process.env.NODE_ENV,
       version: process.env.APP_VERSION,
-      correlationId: context?.correlationId || crypto.randomUUID(),
-      ...context
+      correlationId: context?.correlationId,
+      ...context,
     };
-  }
-
-  private async sendToLogAnalytics(
-    level: string,
-    logEntry: any
-  ): Promise<void> {
-    try {
-      if (this.logAnalyticsClient) {
-        await this.logAnalyticsClient.upload(
-          'HybridSSOLogs',
-          [logEntry],
-          { timeGenerated: new Date() }
-        );
-      }
-    } catch (error) {
-      this.logger.error('Failed to send log to Log Analytics', {
-        error,
-        logEntry
-      });
-    }
-  }
-
-  async flush(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.logger.on('finish', resolve);
-      this.logger.end();
-    });
   }
 }

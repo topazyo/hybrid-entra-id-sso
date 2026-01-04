@@ -1,6 +1,7 @@
 import { Logger } from '../utils/Logger';
 import { AuditLogger } from './AuditLogger';
 import { WorkflowManager } from './WorkflowManager';
+import { generateId } from '../utils/IdGenerator';
 
 interface IdentityLifecycleEvent {
   type: 'onboarding' | 'offboarding' | 'role_change' | 'department_change';
@@ -62,7 +63,7 @@ export class IdentityLifecycleManager {
     event: IdentityLifecycleEvent
   ): Promise<WorkflowDefinition> {
     return {
-      id: crypto.randomUUID(),
+      id: generateId('workflow'),
       name: 'User Onboarding',
       steps: [
         {

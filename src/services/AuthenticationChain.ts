@@ -1,6 +1,6 @@
 import { Logger } from '../utils/Logger';
 import { RiskEngine } from '../security/RiskEngine';
-import { AuthenticationProvider } from '../types/auth';
+import { generateId } from '../utils/IdGenerator';
 
 interface AuthenticationContext {
   userId: string;
@@ -8,6 +8,40 @@ interface AuthenticationContext {
   ipAddress: string;
   timestamp: Date;
   factors: string[];
+}
+
+interface FactorResult {
+  factor: string;
+  success: boolean;
+  details?: any;
+}
+
+interface AuthenticationResult {
+  success: boolean;
+  completedFactors: string[];
+  failedFactors: string[];
+  timestamp: Date;
+  sessionId?: string;
+}
+
+interface AuthenticationProvider {
+  authenticate(context: AuthenticationContext): Promise<FactorResult>;
+}
+
+interface ChainConfiguration {
+  baseFactors: string[];
+  mediumRiskThreshold: number;
+  highRiskThreshold: number;
+  mediumRiskFactors: string[];
+  highRiskFactors: string[];
+  mandatoryFactors?: string[];
+}
+
+class AuthenticationError extends Error {
+  constructor(message: string, public cause?: unknown) {
+    super(message);
+    this.name = 'AuthenticationError';
+  }
 }
 
 export class AuthenticationChain {
@@ -19,6 +53,7 @@ export class AuthenticationChain {
   constructor() {
     this.logger = new Logger('AuthenticationChain');
     this.riskEngine = new RiskEngine();
+    this.providers = new Map();
     this.initializeProviders();
     this.loadChainConfiguration();
   }
@@ -99,5 +134,31 @@ export class AuthenticationChain {
       timestamp: new Date(),
       sessionId: success ? this.generateSessionId() : undefined
     };
+  }
+
+  /** Configure default providers (placeholder for future provider injection). */
+  private initializeProviders(): void {
+    // In absence of concrete providers, keep map empty; callers are expected to register providers externally.
+    // This method exists to prevent constructor failures and allow future extension.
+  }
+
+  /** Load default chain configuration thresholds and factors. */
+  private loadChainConfiguration(): void {
+    this.chainConfig = {
+      baseFactors: ['password'],
+      mediumRiskThreshold: 50,
+      highRiskThreshold: 75,
+      mediumRiskFactors: ['device'],
+      highRiskFactors: ['mfa'],
+      mandatoryFactors: ['password']
+    };
+  }
+
+  private isFactorMandatory(factor: string): boolean {
+    return (this.chainConfig.mandatoryFactors || []).includes(factor);
+  }
+
+  private generateSessionId(): string {
+    return generateId('session');
   }
 }

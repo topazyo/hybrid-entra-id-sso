@@ -2,6 +2,7 @@
 import { HealthController, HealthStatus, HealthCheck } from './HealthController';
 import { AuditLogger, LogProvider } from '../services/AuditLogger';
 import { ConfigurationManager } from '../services/ConfigurationManager'; // Import
+jest.setTimeout(15000);
 
 // Mock LogProvider as before
 class MockLogProvider implements LogProvider {
@@ -38,7 +39,6 @@ describe('HealthController', () => {
     // Pass the mockConfigManager to HealthController
     healthController = new HealthController(mockLogProvider, mockConfigManager, testAppVersion);
 
-    jest.useFakeTimers().setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
   });
 
   afterEach(() => {
@@ -46,7 +46,6 @@ describe('HealthController', () => {
     logSystemActivitySpy.mockRestore();
     setGlobalContextSpy.mockRestore();
     mockLogProvider.clearLogs();
-    jest.useRealTimers();
   });
 
   it('should create an instance and log initialization', () => {

@@ -62,7 +62,7 @@ export class AuthenticationChain {
       return noProviderResponse;
     }
 
-    let lastResponse: AuthResponse = { isAuthenticated: false, error: 'Chain executed, but no provider succeeded definitively.' };
+    let lastResponse: AuthResponse | undefined = undefined;
 
     for (const provider of this.providers) {
       this.auditLogger.logEvent(
@@ -72,7 +72,6 @@ export class AuthenticationChain {
       );
       try {
         const response = await provider.authenticate(request);
-        lastResponse = response;
 
         if (response.isAuthenticated) {
           this.auditLogger.logEvent(
@@ -86,18 +85,25 @@ export class AuthenticationChain {
             response.userId, undefined, 'SUCCESS', correlationId
           );
           return response;
-        } else {
-          // Provider explicitly failed (returned isAuthenticated: false)
-          this.auditLogger.logEvent(
-            'AUTH_PROVIDER_FAILURE',
-            {
-              provider: provider.getName(),
-              error: response.error, // This could be string or AuthError from provider
-              responseDetails: response.details
-            },
-            request.userId, undefined, 'FAILURE', correlationId
-          );
         }
+
+        // Provider explicitly failed (returned isAuthenticated: false)
+        if (response.error !== undefined) {
+          lastResponse = response;
+        } else if (!lastResponse) {
+          // Preserve earliest non-error response only if nothing else is set
+          lastResponse = response;
+        }
+
+        this.auditLogger.logEvent(
+          'AUTH_PROVIDER_FAILURE',
+          {
+            provider: provider.getName(),
+            error: response.error, // This could be string or AuthError from provider
+            responseDetails: response.details
+          },
+          request.userId, undefined, 'FAILURE', correlationId
+        );
       } catch (error: any) {
         // Provider threw an exception
         const structuredError: AuthError = {
@@ -130,11 +136,13 @@ export class AuthenticationChain {
       }
     }
 
+    const finalResponse: AuthResponse = lastResponse || { isAuthenticated: false, error: 'Chain executed, but no provider succeeded definitively.' };
+
     this.auditLogger.logEvent(
       'AUTH_CHAIN_COMPLETE',
-      { result: lastResponse, reason: "No provider authenticated successfully" },
+      { result: finalResponse, reason: "No provider authenticated successfully" },
       request.userId, undefined, 'FAILURE', correlationId
     );
-    return lastResponse;
+    return finalResponse;
   }
 }

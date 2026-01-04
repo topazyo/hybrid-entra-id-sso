@@ -148,12 +148,3 @@ describe('BearerTokenAuthProvider', () => {
   });
 });
 
-// Re-add MockLogProvider for self-containment
-class MockLogProvider implements LogProvider {
-  public logs: { level: string, message: string, meta?: any }[] = [];
-  info(message: string, meta?: any): void { this.logs.push({ level: 'info', message, meta }); }
-  warn(message: string, meta?: any): void { this.logs.push({ level: 'warn', message, meta }); }
-  error(message: string, meta?: any): void { this.logs.push({ level: 'error', message, meta }); }
-  debug(message: string, meta?: any): void { this.logs.push({ level: 'debug', message, meta }); }
-  clearLogs(): void { this.logs = []; }
-}

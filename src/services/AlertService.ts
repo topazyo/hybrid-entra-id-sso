@@ -1,26 +1,15 @@
-import { Logger } from '../utils/Logger';
-import { EventBus } from '../utils/EventBus';
+import { Logger } from '../../utils/Logger';
+import { EventBus } from '../../utils/EventBus';
 import { MetricsCollector } from './MetricsCollector';
-
-interface Alert {
-  id: string;
-  severity: 'low' | 'medium' | 'high' | 'critical';
-  component: string;
-  message: string;
-  details: any;
-  timestamp: Date;
-  status: 'new' | 'acknowledged' | 'resolved';
-  acknowledgedBy?: string;
-  resolvedBy?: string;
-  resolution?: string;
-}
+import { generateId } from '../../utils/IdGenerator';
+import { Alert, AlertCreateInput } from '../types/alerts';
 
 export class AlertService {
   private logger: Logger;
   private eventBus: EventBus;
   private metrics: MetricsCollector;
   private activeAlerts: Map<string, Alert>;
-  private alertHandlers: Map<string, AlertHandler>;
+  private alertHandlers!: Map<string, AlertHandler>;
 
   constructor() {
     this.logger = new Logger('AlertService');
@@ -32,18 +21,18 @@ export class AlertService {
 
   private initializeAlertHandlers(): void {
     this.alertHandlers = new Map([
-      ['critical', new CriticalAlertHandler()],
-      ['high', new HighAlertHandler()],
-      ['medium', new MediumAlertHandler()],
-      ['low', new LowAlertHandler()]
+      ['critical', new CriticalAlertHandler(this.logger, this.eventBus, this.metrics)],
+      ['high', new HighAlertHandler(this.logger, this.eventBus, this.metrics)],
+      ['medium', new MediumAlertHandler(this.logger, this.eventBus, this.metrics)],
+      ['low', new LowAlertHandler(this.logger, this.eventBus, this.metrics)]
     ]);
   }
 
-  async sendAlert(alertData: Omit<Alert, 'id' | 'timestamp' | 'status'>): Promise<string> {
+  async sendAlert(alertData: AlertCreateInput): Promise<string> {
     try {
       const alert: Alert = {
         ...alertData,
-        id: crypto.randomUUID(),
+        id: generateId('alert'),
         timestamp: new Date(),
         status: 'new'
       };
@@ -146,27 +135,50 @@ interface AlertHandler {
   handleAlert(alert: Alert): Promise<void>;
 }
 
-class CriticalAlertHandler implements AlertHandler {
-  async handleAlert(alert: Alert): Promise<void> {
-    // Implement critical alert handling
-    // e.g., Send SMS, call on-call team, etc.
+class BaseAlertHandler {
+  protected logger: Logger;
+  protected eventBus: EventBus;
+  protected metrics: MetricsCollector;
+
+  constructor(logger: Logger, eventBus: EventBus, metrics: MetricsCollector) {
+    this.logger = logger;
+    this.eventBus = eventBus;
+    this.metrics = metrics;
+  }
+
+  protected async record(severity: Alert['severity'], alert: Alert): Promise<void> {
+    await this.metrics.recordMetric(`alerts.${severity}`, 1, { component: alert.component });
   }
 }
 
-class HighAlertHandler implements AlertHandler {
+class CriticalAlertHandler extends BaseAlertHandler implements AlertHandler {
   async handleAlert(alert: Alert): Promise<void> {
-    // Implement high priority alert handling
+    await this.record('critical', alert);
+    await this.eventBus.publish('alert.critical', alert);
+    await this.logger.warn('Critical alert dispatched', { alertId: alert.id, component: alert.component });
   }
 }
 
-class MediumAlertHandler implements AlertHandler {
+class HighAlertHandler extends BaseAlertHandler implements AlertHandler {
   async handleAlert(alert: Alert): Promise<void> {
-    // Implement medium priority alert handling
+    await this.record('high', alert);
+    await this.eventBus.publish('alert.high', alert);
+    await this.logger.warn('High alert dispatched', { alertId: alert.id, component: alert.component });
   }
 }
 
-class LowAlertHandler implements AlertHandler {
+class MediumAlertHandler extends BaseAlertHandler implements AlertHandler {
   async handleAlert(alert: Alert): Promise<void> {
-    // Implement low priority alert handling
+    await this.record('medium', alert);
+    await this.eventBus.publish('alert.medium', alert);
+    await this.logger.info('Medium alert handled', { alertId: alert.id, component: alert.component });
+  }
+}
+
+class LowAlertHandler extends BaseAlertHandler implements AlertHandler {
+  async handleAlert(alert: Alert): Promise<void> {
+    await this.record('low', alert);
+    await this.eventBus.publish('alert.low', alert);
+    await this.logger.info('Low alert handled', { alertId: alert.id, component: alert.component });
   }
 }

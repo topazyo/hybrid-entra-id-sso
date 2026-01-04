@@ -1,7 +1,10 @@
 // tests/integration/config.test.ts
-import request from 'supertest';
+import request, { Response as SupertestResponse } from 'supertest';
 import app from '../../src/index'; // Import the Express app
 import { ConfigurationManager } from '../../src/services/ConfigurationManager'; // To potentially set test values
+
+const getConfig = (key: string, bucket = 'config-default') =>
+  request(app).get(`/config/${key}`).set('x-rate-limit-id', bucket);
 
 // Helper to get the ConfigurationManager instance used by the app.
 // This is a bit of a hack for testing. In a real DI setup, this would be easier.
@@ -15,7 +18,7 @@ describe('GET /config/:key Integration Tests', () => {
 
   it('should return 200 OK and the value for an allowed, existing key', async () => {
     const key = 'appName'; // This key is set in src/index.ts's configManager
-    const response = await request(app).get(`/config/${key}`);
+    const response = await getConfig(key, 'config-allowed-1');
 
     expect(response.status).toBe(200);
     expect(response.body).toBeDefined();
@@ -25,7 +28,7 @@ describe('GET /config/:key Integration Tests', () => {
 
   it('should return 200 OK for another allowed key like defaultPort', async () => {
     const key = 'defaultPort'; // This key is set in src/index.ts's configManager
-    const response = await request(app).get(`/config/${key}`);
+    const response = await getConfig(key, 'config-allowed-2');
 
     expect(response.status).toBe(200);
     expect(response.body).toBeDefined();
@@ -35,7 +38,7 @@ describe('GET /config/:key Integration Tests', () => {
 
   it('should return 404 Not Found for a non-existent key', async () => {
     const key = 'thisKeyDoesNotExist123';
-    const response = await request(app).get(`/config/${key}`);
+    const response = await getConfig(key, 'config-not-found');
 
     expect(response.status).toBe(404);
     expect(response.body).toBeDefined();
@@ -53,7 +56,7 @@ describe('GET /config/:key Integration Tests', () => {
     // This is tricky in integration tests without direct access to the app's configManager instance.
     // The filter in index.ts for /config/:key *should* deny based on pattern first.
 
-    const response = await request(app).get(`/config/${key}`);
+    const response = await getConfig(key, 'config-sensitive-password');
 
     expect(response.status).toBe(403);
     expect(response.body).toBeDefined();
@@ -62,7 +65,7 @@ describe('GET /config/:key Integration Tests', () => {
 
   it('should return 403 Forbidden for another sensitive key pattern (e.g., contains "secret")', async () => {
     const key = 'api.secretToken';
-    const response = await request(app).get(`/config/${key}`);
+    const response = await getConfig(key, 'config-sensitive-secret');
     expect(response.status).toBe(403);
     expect(response.body.error).toBe('Access to this configuration key is restricted.');
   });
@@ -71,7 +74,7 @@ describe('GET /config/:key Integration Tests', () => {
     // 'healthCheck.testKey' is in ALLOWED_CONFIG_KEYS and contains 'Key'
     // This key is set in src/index.ts for configManager
     const key = 'healthCheck.testKey';
-    const response = await request(app).get(`/config/${key}`);
+    const response = await getConfig(key, 'config-allowed-sensitive');
 
     expect(response.status).toBe(200);
     expect(response.body).toBeDefined();
@@ -100,12 +103,13 @@ describe('GET /config/:key Integration Tests', () => {
   it('should return 429 Too Many Requests if rate limit is exceeded for /config/:key', async () => {
     const key = 'appName'; // An allowed key, known to exist
     const endpoint = `/config/${key}`;
+    const bucket = 'config-rate-limit';
     const maxRequests = 10; // Must match configRateLimitConfig in index.ts
     // const windowSeconds = 60; // Not directly used for jest fake timers here
 
-    const promises = [];
+    const promises: Array<Promise<SupertestResponse>> = [];
     for (let i = 0; i < maxRequests; i++) {
-      promises.push(request(app).get(endpoint));
+      promises.push(request(app).get(endpoint).set('x-rate-limit-id', bucket));
     }
     const responses = await Promise.all(promises);
     responses.forEach(res => {
@@ -113,7 +117,7 @@ describe('GET /config/:key Integration Tests', () => {
     });
 
     // Next request should be rate limited
-    const limitedResponse = await request(app).get(endpoint);
+    const limitedResponse = await request(app).get(endpoint).set('x-rate-limit-id', bucket);
     expect(limitedResponse.status).toBe(429);
     expect(limitedResponse.body.error).toBe('Too Many Requests. Please try again later.');
   });
@@ -123,7 +127,7 @@ describe('GET /config/:key Integration Tests', () => {
       // Express default behavior for /config/:key means key must be present.
       // Testing an effectively "empty" key by trying a key that is just whitespace (URL encoded)
       // which the regex should then reject.
-      const response = await request(app).get('/config/%20'); // URL encoded space
+      const response = await request(app).get('/config/%20').set('x-rate-limit-id', 'config-validation-empty'); // URL encoded space
       expect(response.status).toBe(400);
       expect(response.body.errors).toBeInstanceOf(Array);
       expect(response.body.errors[0].msg).toContain('Key parameter contains invalid characters');
@@ -131,7 +135,7 @@ describe('GET /config/:key Integration Tests', () => {
 
     it('should return 400 Bad Request for a key with invalid characters', async () => {
       const invalidKey = 'my!key'; // '!' is not allowed by the regex
-      const response = await request(app).get(`/config/${invalidKey}`);
+      const response = await request(app).get(`/config/${invalidKey}`).set('x-rate-limit-id', 'config-validation-invalid');
       expect(response.status).toBe(400);
       expect(response.body.errors).toBeInstanceOf(Array);
       expect(response.body.errors[0].msg).toContain('Key parameter contains invalid characters');
@@ -141,7 +145,7 @@ describe('GET /config/:key Integration Tests', () => {
 
     it('should return 400 Bad Request for a key that is too long', async () => {
       const longKey = 'a'.repeat(256);
-      const response = await request(app).get(`/config/${longKey}`);
+      const response = await request(app).get(`/config/${longKey}`).set('x-rate-limit-id', 'config-validation-long');
       expect(response.status).toBe(400);
       expect(response.body.errors).toBeInstanceOf(Array);
       expect(response.body.errors[0].msg).toContain('Key parameter must be between 1 and 255 characters');
@@ -149,7 +153,7 @@ describe('GET /config/:key Integration Tests', () => {
 
     it('should still return 200 OK for a valid key after adding validation', async () => {
         const key = 'appName';
-        const response = await request(app).get(`/config/${key}`);
+        const response = await request(app).get(`/config/${key}`).set('x-rate-limit-id', 'config-validation-valid');
         expect(response.status).toBe(200);
         expect(response.body.value).toBe('HybridEntraIdSsoSuite');
     });

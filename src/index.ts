@@ -24,9 +24,9 @@ configManager.loadFromEnv('APP_');
 configManager.set('defaultPort', 3000);
 configManager.set('healthCheck.testKey', 'healthyValue123');
 configManager.set('appVersion', '0.1.0-running');
+configManager.set('appName', 'HybridEntraIdSsoSuite');
 
 const healthController = new HealthController(new ConsoleLogProvider(), configManager, configManager.get('appVersion', '0.1.0-default'));
-const rateLimiter = new RateLimiter(new ConsoleLogProvider());
 const racfService = new RacfIntegrationService(new ConsoleLogProvider());
 const accessTokenService = new AccessTokenService(new ConsoleLogProvider());
 
@@ -60,22 +60,25 @@ const createRateLimitMiddleware = (
     limitConfig: { maxRequests: number, windowSeconds: number },
     endpointName: string
 ) => {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const identifier = req.ip;
+  const rateLimiter = new RateLimiter(undefined, new ConsoleLogProvider());
+  const effectiveWindowSeconds = limitConfig.windowSeconds;
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const identifier = (req.headers['x-rate-limit-id'] as string) || req.ip;
 
     if (!identifier) {
         auditLogger.logSystemActivity('RateLimitMiddleware: Could not determine identifier (req.ip is undefined)', { url: req.originalUrl }, 'warn');
         return next();
     }
 
-    if (!rateLimiter.isAllowed(identifier, limitConfig.maxRequests, limitConfig.windowSeconds)) {
+    const allowed = await rateLimiter.isAllowed(identifier, limitConfig.maxRequests, effectiveWindowSeconds);
+    if (!allowed) {
       auditLogger.logEvent(
         'RATE_LIMIT_APPLIED_MIDDLEWARE',
         {
           identifier,
           endpoint: endpointName,
           maxRequests: limitConfig.maxRequests,
-          windowSeconds: limitConfig.windowSeconds,
+          windowSeconds: effectiveWindowSeconds,
           url: req.originalUrl
         },
         undefined,
@@ -119,7 +122,13 @@ app.get(
   }
 });
 
-const SENSITIVE_KEY_PATTERNS = [/secret/i, /password/i, /key/i, /token/i];
+const SENSITIVE_KEY_PATTERNS = [
+  /secret/i,
+  /password/i,
+  /token/i,
+  /api[-_]?key/i,
+  /private[-_]?key/i
+];
 const ALLOWED_CONFIG_KEYS = ['healthCheck.testKey', 'defaultPort', 'appVersion', 'appName'];
 
 app.get(
@@ -133,19 +142,20 @@ app.get(
   (req: Request, res: Response) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      auditLogger.logEvent(
-        'CONFIG_ACCESS_VALIDATION_ERROR',
-        {
-          key_provided: req.params.key,
-          reason: 'express-validator validation failed',
-          errors: errors.array()
-        },
-        undefined,
-        req.ip,
-        'FAILURE',
-        req.headers['x-correlation-id'] as string | undefined
-      );
-      return res.status(400).json({ errors: errors.array() });
+        const formattedErrors = errors.array().map((err) => ({ ...err, param: (err as any).param ?? (err as any).path }));
+        auditLogger.logEvent(
+          'CONFIG_ACCESS_VALIDATION_ERROR',
+          {
+            key_provided: req.params.key,
+            reason: 'express-validator validation failed',
+            errors: formattedErrors
+          },
+          undefined,
+          req.ip,
+          'FAILURE',
+          req.headers['x-correlation-id'] as string | undefined
+        );
+        return res.status(400).json({ errors: formattedErrors });
     }
 
     const { key } = req.params;
@@ -243,12 +253,13 @@ app.post(
         );
         return res.status(200).json({ access_token: token, token_type: 'Bearer', user: authResponse.details });
       } else {
+        const failureDetails = authResponse.error ?? { code: 'AUTH_FAILED_RACF', message: 'Authentication failed.' };
         auditLogger.logEvent(
             'AUTH_TOKEN_AUTHENTICATION_FAILURE',
-            { userId, error: authResponse.error },
+            { userId, error: failureDetails },
             userId, clientIp, 'FAILURE', correlationId
         );
-        return res.status(401).json({ error: 'Authentication failed.', details: authResponse.error });
+        return res.status(401).json({ error: 'Authentication failed.', details: failureDetails });
       }
     } catch (chainError: any) {
       auditLogger.logEvent(
@@ -262,15 +273,17 @@ app.post(
 );
 
 
-// Start server
-app.listen(PORT, () => {
-  auditLogger.logSystemActivity(`Server is running on port ${PORT}`, { port: PORT, environment: process.env.NODE_ENV || 'development' }, 'info');
-  console.log(`Server listening on http://localhost:${PORT}`);
-  console.log(`Health check available at http://localhost:${PORT}/health`);
-  console.log(`Config access (example): http://localhost:${PORT}/config/appName`);
-  console.log(`Mainframe data route (example): http://localhost:${PORT}/api/v1/mainframe/data`);
-  console.log(`Token endpoint (POST): http://localhost:${PORT}/auth/token`);
-});
+// Start server unless under test (Jest imports the app directly)
+if (process.env.JEST_WORKER_ID === undefined && process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    auditLogger.logSystemActivity(`Server is running on port ${PORT}`, { port: PORT, environment: process.env.NODE_ENV || 'development' }, 'info');
+    console.log(`Server listening on http://localhost:${PORT}`);
+    console.log(`Health check available at http://localhost:${PORT}/health`);
+    console.log(`Config access (example): http://localhost:${PORT}/config/appName`);
+    console.log(`Mainframe data route (example): http://localhost:${PORT}/api/v1/mainframe/data`);
+    console.log(`Token endpoint (POST): http://localhost:${PORT}/auth/token`);
+  });
+}
 
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     auditLogger.logSystemActivity('Unhandled Express Error', {

@@ -94,7 +94,7 @@ describe('RateLimiter with InMemoryRateLimitStore', () => {
 
       expect(await rateLimiter.isAllowed(testIdentifier, maxRequests, windowSeconds)).toBe(true);
       expect(logSystemActivitySpy).toHaveBeenCalledWith('InMemoryStore: Entry expired, resetting',
-        expect.objectContaining({ identifier: testIdentifier })
+        expect.objectContaining({ key: testIdentifier })
       );
       // The last call to logEventSpy for this identifier should be NEW_IDENTIFIER_ATOMIC
       const callsForIdentifier = logEventSpy.mock.calls.filter(call => call[1].identifier === testIdentifier);

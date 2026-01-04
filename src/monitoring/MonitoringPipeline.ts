@@ -2,6 +2,7 @@ import { Logger } from '../utils/Logger';
 import { MetricsCollector } from '../services/MetricsCollector';
 import { AlertService } from '../services/AlertService';
 import { EventBus } from '../utils/EventBus';
+import { generateId } from '../utils/IdGenerator';
 
 interface MonitoringEvent {
   type: string;
@@ -69,7 +70,7 @@ export class MonitoringPipeline {
       metadata: {
         ...event.metadata,
         environment: process.env.NODE_ENV,
-        correlationId: crypto.randomUUID(),
+        correlationId: generateId('corr'),
         processingTimestamp: new Date()
       }
     };
